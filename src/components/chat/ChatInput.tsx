@@ -26,9 +26,11 @@ import {
   KeyboardArrowUp as ArrowUpIcon,
   Stop as StopIcon,
   Refresh as RefreshIcon,
-  Mic as MicIcon
+  Mic as MicIcon,
+  PersonAddAlt1 as PersonAddIcon,
+  Edit as EditIcon
 } from '@mui/icons-material';
-import { CHAT_TEXT } from '../../constants/textConstants';
+import { CHAT_TEXT, CREATE_AGENT_TEXT } from '../../constants/textConstants';
 import { useSpeechRecognition } from '../../hooks/useSpeechRecognition';
 
 interface AgentConfig {
@@ -45,6 +47,8 @@ interface ChatInputProps {
   agents: Record<string, AgentConfig>;
   onAgentChange: (agent: string) => void;
   onNewChat: () => void;
+  onCreateAgent?: () => void;
+  onEditAgent?: () => void;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({
@@ -55,7 +59,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   selectedAgent,
   agents,
   onAgentChange,
-  onNewChat
+  onNewChat,
+  onCreateAgent,
+  onEditAgent
 }) => {
   // Sort agents alphabetically for consistent ordering
   const sortedAgents = Object.entries(agents).sort(([, a], [, b]) => 
@@ -357,6 +363,89 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     <RefreshIcon />
                   </IconButton>
                 </Tooltip>
+
+                {/* Create Agent Button */}
+                {onCreateAgent && (
+                  <Tooltip title={CREATE_AGENT_TEXT.NAV_BUTTON_TOOLTIP} arrow>
+                    <IconButton
+                      onClick={onCreateAgent}
+                      disabled={isLoading}
+                      size="small"
+                      sx={{
+                        width: 40,
+                        height: 40,
+                        borderRadius: 1.5,
+                        backgroundColor: (theme) => theme.palette.mode === 'dark'
+                          ? alpha(theme.palette.grey[800], 0.6)
+                          : alpha(theme.palette.grey[100], 0.8),
+                        border: (theme) => theme.palette.mode === 'dark'
+                          ? `1px solid ${alpha(theme.palette.grey[600], 0.3)}`
+                          : `1px solid ${alpha(theme.palette.grey[300], 0.5)}`,
+                        color: 'primary.main',
+                        transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                        '&:hover': {
+                          backgroundColor: (theme) => theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.primary.main, 0.1)
+                            : alpha(theme.palette.primary.main, 0.05),
+                          borderColor: (theme) => alpha(theme.palette.primary.main, 0.5),
+                          color: 'primary.main',
+                          transform: 'translateY(-1px)',
+                          boxShadow: (theme) => `0 4px 12px ${alpha(theme.palette.primary.main, 0.2)}`
+                        },
+                        '&:active': {
+                          transform: 'translateY(0px)'
+                        },
+                        '&:disabled': {
+                          color: 'action.disabled',
+                          backgroundColor: (theme) => alpha(theme.palette.action.disabled, 0.12),
+                          borderColor: (theme) => alpha(theme.palette.action.disabled, 0.12)
+                        }
+                      }}
+                    >
+                      <PersonAddIcon />
+                    </IconButton>
+                  </Tooltip>
+                )}
+
+                {/* Edit Agent Button */}
+                {onEditAgent && (
+                  <Tooltip title={CREATE_AGENT_TEXT.EDIT_TOOLTIP} arrow>
+                    <IconButton
+                      onClick={onEditAgent}
+                      disabled={isLoading}
+                      size="small"
+                      sx={{
+                        width: 40,
+                        height: 40,
+                        borderRadius: 1.5,
+                        backgroundColor: (theme) => theme.palette.mode === 'dark'
+                          ? alpha(theme.palette.grey[800], 0.6)
+                          : alpha(theme.palette.grey[100], 0.8),
+                        border: (theme) => theme.palette.mode === 'dark'
+                          ? `1px solid ${alpha(theme.palette.grey[600], 0.3)}`
+                          : `1px solid ${alpha(theme.palette.grey[300], 0.5)}`,
+                        color: 'primary.main',
+                        transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                        '&:hover': {
+                          backgroundColor: (theme) => theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.primary.main, 0.1)
+                            : alpha(theme.palette.primary.main, 0.05),
+                          borderColor: (theme) => alpha(theme.palette.primary.main, 0.5),
+                          transform: 'translateY(-1px)',
+                          boxShadow: (theme) => `0 4px 12px ${alpha(theme.palette.primary.main, 0.2)}`
+                        },
+                        '&:active': { transform: 'translateY(0px)' },
+                        '&:disabled': {
+                          color: 'action.disabled',
+                          backgroundColor: (theme) => alpha(theme.palette.action.disabled, 0.12),
+                          borderColor: (theme) => alpha(theme.palette.action.disabled, 0.12)
+                        }
+                      }}
+                    >
+                      <EditIcon />
+                    </IconButton>
+                  </Tooltip>
+                )}
               </Stack>
               
               {/* Bottom row on mobile, right side on desktop - Text Input, Mic, and Send Button */}

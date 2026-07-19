@@ -314,38 +314,14 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
     return { xKey, yKeys };
   }, [data]);
 
-  // Enhanced tooltip formatter to match the reference image
-  const formatTooltipValue = (value: any, name: string) => {
-    if (typeof value === 'number') {
-      return [value.toLocaleString(), name.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())];
-    }
-    return [value, name];
-  };
-
-  // Enhanced label formatter for tooltips
-  const formatTooltipLabel = (label: string) => {
-    if (label && typeof label === 'string') {
-      // Convert date strings to readable format like "Month (2025) Jul"
-      if (label.includes('-') && label.length >= 7) {
-        try {
-          const date = new Date(label);
-          if (!isNaN(date.getTime())) {
-            const month = date.toLocaleDateString('en-US', { month: 'short' });
-            const year = date.getFullYear();
-            return `Month (${year}) ${month}`;
-          }
-        } catch (e) {
-          // Fall through to default formatting
-        }
-      }
-    }
-    return label;
-  };
-
   // Generic tooltip formatter for any data type
-  const customTooltipFormatter = (value: any, name: string) => {
+  const customTooltipFormatter = (value: any, name?: string, props?: any) => {
+    if (value === null || value === undefined) {
+      return [value, name];
+    }
+    
     // Enhanced field name formatting
-    let formattedName = name;
+    let formattedName = name || '';
     
     // Replace underscores with spaces
     formattedName = formattedName.replace(/_/g, ' ');
@@ -370,7 +346,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
   };
 
   // Generic label formatter for tooltips - handles dates, strings, etc.
-  const customLabelFormatter = (label: string) => {
+  const customLabelFormatter = (label: any, payload?: any) => {
     if (label && typeof label === 'string') {
       // Try to parse as date
       if (label.includes('-') && label.length >= 7) {
@@ -522,8 +498,8 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 width={70}
               />
               <Tooltip 
-                formatter={customTooltipFormatter}
-                labelFormatter={customLabelFormatter}
+                formatter={customTooltipFormatter as any}
+                labelFormatter={customLabelFormatter as any}
                 contentStyle={{
                   backgroundColor: alpha(theme.palette.background.paper, 0.95),
                   border: `1px solid ${alpha(theme.palette.divider, 0.3)}`,
@@ -625,8 +601,8 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 width={70}
               />
               <Tooltip 
-                formatter={customTooltipFormatter}
-                labelFormatter={customLabelFormatter}
+                formatter={customTooltipFormatter as any}
+                labelFormatter={customLabelFormatter as any}
                 contentStyle={{
                   backgroundColor: alpha(theme.palette.background.paper, 0.95),
                   border: `1px solid ${alpha(theme.palette.divider, 0.3)}`,
@@ -685,8 +661,8 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 tickFormatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
               />
               <Tooltip 
-                formatter={formatTooltipValue}
-                labelFormatter={formatTooltipLabel}
+                formatter={customTooltipFormatter as any}
+                labelFormatter={customLabelFormatter as any}
                 contentStyle={{
                   backgroundColor: theme.palette.background.paper,
                   border: `1px solid ${theme.palette.divider}`,
@@ -746,7 +722,7 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 ))}
               </Pie>
               <Tooltip 
-                formatter={(value) => [typeof value === 'number' ? value.toLocaleString() : value, 'Value']}
+                formatter={customTooltipFormatter as any}
                 contentStyle={{
                   backgroundColor: theme.palette.background.paper,
                   border: `1px solid ${theme.palette.divider}`,
@@ -787,8 +763,8 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 tickFormatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
               />
               <Tooltip 
-                formatter={formatTooltipValue}
-                labelFormatter={formatTooltipLabel}
+                formatter={customTooltipFormatter as any}
+                labelFormatter={customLabelFormatter as any}
                 contentStyle={{
                   backgroundColor: theme.palette.background.paper,
                   border: `1px solid ${theme.palette.divider}`,
@@ -836,8 +812,8 @@ const ChartVisualization: React.FC<ChartVisualizationProps> = ({
                 tickFormatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
               />
               <Tooltip 
-                formatter={formatTooltipValue}
-                labelFormatter={formatTooltipLabel}
+                formatter={customTooltipFormatter as any}
+                labelFormatter={customLabelFormatter as any}
                 contentStyle={{
                   backgroundColor: theme.palette.background.paper,
                   border: `1px solid ${theme.palette.divider}`,

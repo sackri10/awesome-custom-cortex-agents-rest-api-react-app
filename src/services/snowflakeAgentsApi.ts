@@ -276,6 +276,193 @@ export const describeCortexAgent = async (agentName: string): Promise<SnowflakeA
 };
 
 /**
+ * Request payload for creating a new Cortex Agent.
+ * Mirrors the fields the Snowflake Cortex Agents REST API accepts on create.
+ */
+export interface CreateAgentRequest {
+  name: string;
+  comment?: string;
+  profile?: {
+    display_name?: string;
+  };
+  models?: {
+    orchestration?: string;
+  };
+  instructions?: {
+    response?: string;
+    orchestration?: string;
+    system?: string;
+    sample_questions?: Array<{ question: string }>;
+  };
+  tools?: any[];
+  /** Maps each tool_spec.name to its resource config (e.g. semantic_view, search_service). */
+  tool_resources?: Record<string, any>;
+  /** Controls overwrite behavior on the backend. Not forwarded to Snowflake as-is. */
+  _createMode?: 'errorIfExists' | 'orReplace';
+}
+
+/**
+ * Creates a new Cortex Agent via our secure backend proxy.
+ * Returns the Snowflake status payload on success, or throws an Error whose
+ * `fullMessage` contains the formatted, user-facing error text.
+ */
+export const createCortexAgent = async (payload: CreateAgentRequest): Promise<any> => {
+  const endpoint = `${config.backendUrl}/api/agents`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 seconds
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || '';
+
+        if (contentType.includes('application/json')) {
+          const errorJson = await response.json();
+          // Backend sends errorParts as an array to preserve structure
+          const errorMessage = errorJson.errorParts
+            ? errorJson.errorParts.join('\n\n')
+            : (typeof errorJson.error === 'string'
+                ? errorJson.error
+                : (errorJson.error?.message || errorJson.message || JSON.stringify(errorJson, null, 2)));
+          const error = new Error(errorMessage);
+          (error as any).fullMessage = errorMessage;
+          throw error;
+        }
+
+        const errorMessage = `${ERROR_TEXT.ERROR_PREFIX}\n${ERROR_TEXT.HTTP_ERROR_STATUS} ${response.status} ${response.statusText}`;
+        const error = new Error(errorMessage);
+        (error as any).fullMessage = errorMessage;
+        throw error;
+      }
+
+      return await response.json();
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+        const errorMessage = `${ERROR_TEXT.ERROR_PREFIX}\n\nRequest timed out after 60 seconds.\n\n💡 Tip: The backend server may be waking up from sleep or there's a connection issue. Please try again in a moment.`;
+        const timeoutError = new Error(errorMessage);
+        (timeoutError as any).fullMessage = errorMessage;
+        throw timeoutError;
+      }
+      throw fetchError;
+    }
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      const errorMessage = `${ERROR_TEXT.ERROR_PREFIX}\n\nFailed to connect to the backend server.\n\n💡 Tip: The backend server at ${config.backendUrl} is not running or not accessible.`;
+      const networkError = new Error(errorMessage);
+      (networkError as any).fullMessage = errorMessage;
+      throw networkError;
+    }
+    throw error;
+  }
+};
+
+/**
+ * Updates (replaces) an existing Cortex Agent via our secure backend proxy.
+ * The agent name is fixed (it's the object identifier); the body is the full spec.
+ */
+export const updateCortexAgent = async (agentName: string, payload: CreateAgentRequest): Promise<any> => {
+  const endpoint = `${config.backendUrl}/api/agents/${encodeURIComponent(agentName)}`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const errorJson = await response.json();
+          const errorMessage = errorJson.errorParts
+            ? errorJson.errorParts.join('\n\n')
+            : (typeof errorJson.error === 'string'
+                ? errorJson.error
+                : (errorJson.error?.message || errorJson.message || JSON.stringify(errorJson, null, 2)));
+          const error = new Error(errorMessage);
+          (error as any).fullMessage = errorMessage;
+          throw error;
+        }
+        const errorMessage = `${ERROR_TEXT.ERROR_PREFIX}\n${ERROR_TEXT.HTTP_ERROR_STATUS} ${response.status} ${response.statusText}`;
+        const error = new Error(errorMessage);
+        (error as any).fullMessage = errorMessage;
+        throw error;
+      }
+
+      return await response.json();
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+        const errorMessage = `${ERROR_TEXT.ERROR_PREFIX}\n\nRequest timed out after 60 seconds.\n\n💡 Tip: The backend server may be waking up or there's a connection issue. Please try again in a moment.`;
+        const timeoutError = new Error(errorMessage);
+        (timeoutError as any).fullMessage = errorMessage;
+        throw timeoutError;
+      }
+      throw fetchError;
+    }
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      const errorMessage = `${ERROR_TEXT.ERROR_PREFIX}\n\nFailed to connect to the backend server.\n\n💡 Tip: The backend server at ${config.backendUrl} is not running or not accessible.`;
+      const networkError = new Error(errorMessage);
+      (networkError as any).fullMessage = errorMessage;
+      throw networkError;
+    }
+    throw error;
+  }
+};
+
+/**
+ * Creates a conversation thread. Snowflake maintains the message history
+ * server-side, so subsequent :run calls only need the new message plus the
+ * thread_id and parent_message_id.
+ */
+export const createCortexThread = async (): Promise<{ thread_id: number }> => {
+  const response = await fetch(`${config.backendUrl}/api/threads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({ origin_application: 'dash-desai' }),
+  });
+
+  if (!response.ok) {
+    const contentType = response.headers.get('content-type') || '';
+    let message = `${ERROR_TEXT.ERROR_PREFIX}\n${ERROR_TEXT.HTTP_ERROR_STATUS} ${response.status}`;
+    if (contentType.includes('application/json')) {
+      const errorJson = await response.json();
+      message = errorJson.errorParts ? errorJson.errorParts.join('\n\n') : (errorJson.error || errorJson.message || message);
+    }
+    const error = new Error(message);
+    (error as any).fullMessage = message;
+    throw error;
+  }
+
+  return response.json();
+};
+
+/**
  * Parses the agent_spec JSON string into a structured object
  */
 export const parseAgentSpec = (agentSpecJson: string): CortexAgentSpec => {

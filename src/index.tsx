@@ -5,7 +5,7 @@
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import SimpleChatInterface from './components/Main';
+import App from './App';
 import { ThemeContextProvider } from './contexts/ThemeContext';
 import { CssBaseline } from '@mui/material';
 import { config } from './config/env';
@@ -170,7 +170,7 @@ const bootstrap = () => {
       <ErrorBoundary>
         <ThemeContextProvider>
           <CssBaseline />
-          <SimpleChatInterface />
+          <App />
         </ThemeContextProvider>
       </ErrorBoundary>
     </React.StrictMode>

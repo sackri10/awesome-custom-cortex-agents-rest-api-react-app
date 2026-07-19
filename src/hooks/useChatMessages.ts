@@ -8,6 +8,7 @@ import { ChatMessage } from '../types/chat';
 import { ChartContent } from '../types/chart';
 import { config } from '../config/env';
 import { extractSqlQuery, extractVerificationInfo } from '../utils/chatUtils';
+import { createCortexThread } from '../services/snowflakeAgentsApi';
 import { ERROR_TEXT, API_DEFAULTS, getApiStatusMessage } from '../constants/textConstants';
 
 const MAX_MESSAGES = 100;
@@ -16,6 +17,12 @@ export const useChatMessages = (selectedAgent: string) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Conversation thread state. Snowflake maintains history server-side, so we
+  // create a thread lazily on the first message and then only send the new turn,
+  // passing the thread id and the last assistant message id as parent.
+  const threadIdRef = useRef<number | null>(null);
+  const parentMessageIdRef = useRef<number>(0);
 
   const sendMessage = useCallback(async (message: string) => {
     if (!message.trim() || isLoading) return;
@@ -57,7 +64,19 @@ export const useChatMessages = (selectedAgent: string) => {
     abortControllerRef.current = abortController;
 
     try {
-      const requestBody = {
+      // Ensure we have a thread so Snowflake maintains conversation history.
+      // Best-effort: if thread creation fails, fall back to a stateless (single-turn) call.
+      if (threadIdRef.current == null) {
+        try {
+          const thread = await createCortexThread();
+          threadIdRef.current = thread.thread_id;
+          parentMessageIdRef.current = 0;
+        } catch {
+          threadIdRef.current = null;
+        }
+      }
+
+      const requestBody: any = {
         messages: [
           {
             role: "user",
@@ -74,6 +93,12 @@ export const useChatMessages = (selectedAgent: string) => {
         },
         stream: true
       };
+
+      // Attach thread context so history is maintained server-side across turns.
+      if (threadIdRef.current != null) {
+        requestBody.thread_id = threadIdRef.current;
+        requestBody.parent_message_id = parentMessageIdRef.current;
+      }
 
       // Call backend proxy instead of Snowflake directly (secure: PAT never exposed to browser)
       const backendEndpoint = `${config.backendUrl}/api/agents/${encodeURIComponent(selectedAgent)}/messages`;
@@ -138,7 +163,12 @@ export const useChatMessages = (selectedAgent: string) => {
             try {
               const data = JSON.parse(dataStr);
 
-              if (currentEvent === 'response.text.delta' && data.text) {
+              if (currentEvent === 'metadata' && data.metadata && data.metadata.message_id != null) {
+                // Track the latest assistant message id to use as the next turn's parent.
+                if (data.metadata.role === 'assistant') {
+                  parentMessageIdRef.current = data.metadata.message_id;
+                }
+              } else if (currentEvent === 'response.text.delta' && data.text) {
                 assistantText += data.text;
                 const currentText = assistantText;
                 setMessages(prev => prev.map(msg => 
@@ -401,6 +431,9 @@ export const useChatMessages = (selectedAgent: string) => {
     setMessages([]);
     setIsLoading(false);
     abortControllerRef.current = null;
+    // Start a fresh thread on the next message (new conversation).
+    threadIdRef.current = null;
+    parentMessageIdRef.current = 0;
   }, [isLoading]);
 
   return {

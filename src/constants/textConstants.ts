@@ -109,6 +109,74 @@ export const TEXT_CONSTANTS = {
     }
   },
 
+  // Create Agent Page
+  CREATE_AGENT: {
+    NAV_BUTTON_TOOLTIP: 'Create a new Cortex agent',
+    BACK_TO_CHAT: '← Back to chat',
+    PAGE_TITLE: 'Create a new Cortex Agent',
+    PAGE_SUBTITLE: 'Fill in the details below to create a new Snowflake Cortex Agent. Only the agent name is required — everything else is optional.',
+    PAGE_TITLE_EDIT: 'Edit Cortex Agent',
+    PAGE_SUBTITLE_EDIT: 'Update this agent\'s configuration. The agent name cannot be changed.',
+    NAME_LOCKED_HELP: 'The agent name is the object identifier and cannot be changed.',
+    LOADING_AGENT: 'Loading agent configuration...',
+    SUBMIT_EDIT: 'Save changes',
+    SUBMITTING_EDIT: 'Saving changes...',
+    SUCCESS_TITLE_EDIT: 'Agent updated!',
+    SUCCESS_MESSAGE_EDIT: 'Your changes have been saved. Returning to chat...',
+    EDIT_TOOLTIP: 'Edit the selected agent',
+    SECTION_BASICS: 'Basics',
+    SECTION_TOOLS: 'Tools',
+    SECTION_INSTRUCTIONS: 'Instructions',
+    SECTION_QUESTIONS: 'Sample questions',
+    SECTION_ADVANCED: 'Advanced (raw tools & resources JSON)',
+    ADVANCED_HELP: 'Optional. Anything you add here is merged on top of the tools selected above — extra tool_spec entries are appended and tool_resources are merged by name. Most users can leave this empty.',
+    TOOLS_SEMANTIC_LABEL: 'Query structured data (semantic views)',
+    TOOLS_SEMANTIC_PLACEHOLDER: 'Select semantic views',
+    TOOLS_SEMANTIC_HELP: 'Attaches a Cortex Analyst tool for each selected semantic view.',
+    TOOLS_SEARCH_LABEL: 'Search documents & unstructured data (Cortex Search)',
+    TOOLS_SEARCH_PLACEHOLDER: 'Select search services',
+    TOOLS_SEARCH_HELP: 'Attaches a Cortex Search tool for each selected search service.',
+    TOOLS_CREATE_SEMANTIC: 'Create semantic view',
+    TOOLS_CREATE_SEARCH: 'Create search service',
+    TOOLS_LOAD_ERROR: 'Could not load existing semantic views / search services. You can still add tools via the Advanced JSON section below.',
+    TOOLS_SCOPE_HELP: 'Pick the database and schema to browse. Semantic views and search services can live in any schema — not just the agents schema.',
+    TOOLS_DATABASE_LABEL: 'Database',
+    TOOLS_SCHEMA_LABEL: 'Schema',
+    TOOLS_MODELFILE_HELP: 'This Cortex Analyst tool is backed by a semantic model file (a YAML on a stage), which can\'t be edited here. Rebind it to a native semantic view — the tool name and warehouse settings are preserved. (To edit the YAML itself, use Snowsight.)',
+    TOOLS_REBIND_LABEL: 'Rebind to a semantic view',
+    NAME_LABEL: 'Agent name (identifier)',
+    NAME_HELP: 'Unique name in this schema. Letters, numbers and underscores only (must start with a letter or underscore).',
+    DISPLAY_NAME_LABEL: 'Display name',
+    DISPLAY_NAME_HELP: 'Friendly name shown in the UI. Defaults to the agent name if left blank.',
+    COMMENT_LABEL: 'Description / comment',
+    MODEL_LABEL: 'Orchestration model',
+    MODEL_HELP: 'Model used to orchestrate the agent. "auto" lets Snowflake pick. Available models vary by region.',
+    RESPONSE_INSTRUCTION_LABEL: 'Response instructions',
+    RESPONSE_INSTRUCTION_HELP: 'Guidance on how the agent should phrase and format its answers.',
+    ORCHESTRATION_INSTRUCTION_LABEL: 'Orchestration instructions',
+    ORCHESTRATION_INSTRUCTION_HELP: 'Guidance on how the agent should plan and use its tools.',
+    SYSTEM_INSTRUCTION_LABEL: 'System instructions',
+    SYSTEM_INSTRUCTION_HELP: 'High-level persona and rules for the agent.',
+    QUESTION_LABEL: 'Sample question',
+    ADD_QUESTION: 'Add question',
+    TOOLS_LABEL: 'Tools (JSON array)',
+    TOOLS_HELP: 'Optional. A JSON array of tool_spec objects. Leave blank if the agent has no tools.',
+    TOOL_RESOURCES_LABEL: 'Tool resources (JSON object)',
+    TOOL_RESOURCES_HELP: 'Optional. A JSON object mapping tool names to their resources (e.g. semantic views, search services).',
+    OVERWRITE_LABEL: 'Overwrite if an agent with this name already exists',
+    EXPORT_YAML: 'Export as YAML',
+    COPY_YAML: 'Copy YAML',
+    YAML_COPIED: 'Agent config (YAML) copied to clipboard',
+    YAML_COPY_FAILED: 'Could not copy to clipboard',
+    SUBMIT: 'Create agent',
+    SUBMITTING: 'Creating agent...',
+    SUCCESS_TITLE: 'Agent created!',
+    SUCCESS_MESSAGE: 'Your new agent is ready. Returning to chat...',
+    INVALID_NAME: 'Agent name must start with a letter or underscore and contain only letters, numbers and underscores.',
+    INVALID_TOOLS_JSON: 'Tools must be valid JSON (a JSON array).',
+    INVALID_TOOL_RESOURCES_JSON: 'Tool resources must be valid JSON (a JSON object).'
+  },
+
   // Message Labels
   MESSAGE_LABELS: {
     USER: 'You',
@@ -208,6 +276,7 @@ export const TEXT_CONSTANTS = {
 // Export individual sections for easier imports
 export const HEADER_TEXT = TEXT_CONSTANTS.HEADER;
 export const CHAT_TEXT = TEXT_CONSTANTS.CHAT;
+export const CREATE_AGENT_TEXT = TEXT_CONSTANTS.CREATE_AGENT;
 export const MESSAGE_LABELS = TEXT_CONSTANTS.MESSAGE_LABELS;
 export const RESPONSE_TEXT = TEXT_CONSTANTS.RESPONSE;
 export const STATUS_TEXT = TEXT_CONSTANTS.STATUS;

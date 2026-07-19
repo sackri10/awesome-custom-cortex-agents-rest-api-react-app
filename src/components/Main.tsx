@@ -19,7 +19,12 @@ import { ChatMessage } from './chat/ChatMessage';
 import { ChatInput } from './chat/ChatInput';
 import { STATUS_TEXT, ERROR_TEXT } from '../constants/textConstants';
 
-const SimpleChatInterface: React.FC = () => {
+interface SimpleChatInterfaceProps {
+  onNavigateToCreate?: () => void;
+  onEditAgent?: (agentName: string) => void;
+}
+
+const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToCreate, onEditAgent }) => {
   const theme = useTheme();
   
   // Agent configuration
@@ -458,6 +463,8 @@ const SimpleChatInterface: React.FC = () => {
         agents={agentConfig ? getVisibleAgents() : {}}
         onAgentChange={handleAgentChange}
         onNewChat={handleNewChat}
+        onCreateAgent={onNavigateToCreate}
+        onEditAgent={onEditAgent && selectedAgent ? () => onEditAgent(selectedAgent) : undefined}
       />
     </Box>
   );
