@@ -147,6 +147,7 @@ export const TEXT_CONSTANTS = {
     NAME_LABEL: 'Agent name (identifier)',
     NAME_HELP: 'Unique name in this schema. Letters, numbers and underscores only (must start with a letter or underscore).',
     DISPLAY_NAME_LABEL: 'Display name',
+
     DISPLAY_NAME_HELP: 'Friendly name shown in the UI. Defaults to the agent name if left blank.',
     COMMENT_LABEL: 'Description / comment',
     MODEL_LABEL: 'Orchestration model',
@@ -175,6 +176,30 @@ export const TEXT_CONSTANTS = {
     INVALID_NAME: 'Agent name must start with a letter or underscore and contain only letters, numbers and underscores.',
     INVALID_TOOLS_JSON: 'Tools must be valid JSON (a JSON array).',
     INVALID_TOOL_RESOURCES_JSON: 'Tool resources must be valid JSON (a JSON object).'
+  },
+
+  // MCP Tools demo page
+  MCP_TOOLS: {
+    NAV_BUTTON_TOOLTIP: 'Browse and call Snowflake MCP tools',
+    BACK_TO_CHAT: '← Back to chat',
+    PAGE_TITLE: 'Snowflake MCP Tools',
+    PAGE_SUBTITLE: 'Discover tools from your Snowflake-managed MCP server and invoke them with arguments from each tool\'s input schema.',
+    REFRESH: 'Refresh tools',
+    TOOL_LABEL: 'Tool',
+    ARGS_TITLE: 'Arguments',
+    NO_ARGS: 'This tool has no input parameters.',
+    CALL: 'Call tool',
+    CALLING: 'Calling…',
+    RESULT_TITLE: 'Result',
+    EMPTY_RESULT: '(empty result)',
+    NOT_CONFIGURED_TITLE: 'MCP not configured',
+    NOT_CONFIGURED:
+      'Create an MCP SERVER in Snowflake (see server/sql/create_mcp_server.sql), set SNOWFLAKE_MCP_SERVER in your backend .env, and restart the server.',
+    NO_TOOLS: 'The MCP server returned no tools. Check the MCP SERVER specification in Snowflake.',
+    LOAD_ERROR_TITLE: 'Could not load tools',
+    LOAD_ERROR: 'Failed to list MCP tools.',
+    CALL_ERROR_TITLE: 'Tool call failed',
+    CALL_ERROR: 'Failed to call MCP tool.',
   },
 
   // Message Labels
@@ -277,6 +302,7 @@ export const TEXT_CONSTANTS = {
 export const HEADER_TEXT = TEXT_CONSTANTS.HEADER;
 export const CHAT_TEXT = TEXT_CONSTANTS.CHAT;
 export const CREATE_AGENT_TEXT = TEXT_CONSTANTS.CREATE_AGENT;
+export const MCP_TOOLS_TEXT = TEXT_CONSTANTS.MCP_TOOLS;
 export const MESSAGE_LABELS = TEXT_CONSTANTS.MESSAGE_LABELS;
 export const RESPONSE_TEXT = TEXT_CONSTANTS.RESPONSE;
 export const STATUS_TEXT = TEXT_CONSTANTS.STATUS;

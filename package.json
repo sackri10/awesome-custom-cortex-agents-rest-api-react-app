@@ -40,11 +40,12 @@
     "concurrently": "^8.2.2",
     "http-proxy-middleware": "^3.0.5",
     "nodemon": "^3.0.2",
+    "tsx": "^4.23.5",
     "web-vitals": "^2.1.4"
   },
   "scripts": {
     "start": "craco start",
-    "start:server": "node server/server.js",
+    "start:server": "tsx server/server.js",
     "start:dev": "NODE_ENV=development npm run start:server",
     "start:all": "concurrently \"npm run start:server\" \"npm start\"",
     "build": "GENERATE_SOURCEMAP=false craco build",

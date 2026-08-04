@@ -22,9 +22,10 @@ import { STATUS_TEXT, ERROR_TEXT } from '../constants/textConstants';
 interface SimpleChatInterfaceProps {
   onNavigateToCreate?: () => void;
   onEditAgent?: (agentName: string) => void;
+  onNavigateToMcp?: () => void;
 }
 
-const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToCreate, onEditAgent }) => {
+const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToCreate, onEditAgent, onNavigateToMcp }) => {
   const theme = useTheme();
   
   // Agent configuration
@@ -465,6 +466,7 @@ const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToC
         onNewChat={handleNewChat}
         onCreateAgent={onNavigateToCreate}
         onEditAgent={onEditAgent && selectedAgent ? () => onEditAgent(selectedAgent) : undefined}
+        onOpenMcpTools={onNavigateToMcp}
       />
     </Box>
   );

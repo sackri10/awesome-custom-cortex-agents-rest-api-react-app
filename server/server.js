@@ -18,6 +18,10 @@ const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 const { HTTP_STATUS, ERROR_MESSAGES, CONFIG } = require('./constants');
 const { buildCreateSearchServiceSql, buildCreateSemanticViewSql } = require('./snowflakeDdl');
+const {
+  createSnowflakeMcpClient,
+  SnowflakeMcpError,
+} = require('./mcpClient');
 
 const app = express();
 // Render uses PORT, local dev uses SERVER_PORT
@@ -58,12 +62,63 @@ const SNOWFLAKE_CONFIG = {
   schema: process.env.SNOWFLAKE_SCHEMA,
   // Optional: only required for CREATE operations (search services / semantic views).
   // Listing and metadata (SHOW commands) run without a warehouse.
-  warehouse: process.env.SNOWFLAKE_WAREHOUSE || null
+  warehouse: process.env.SNOWFLAKE_WAREHOUSE || null,
+  // Optional: required for MCP tools/list and tools/call endpoints.
+  mcpServer: process.env.SNOWFLAKE_MCP_SERVER || null
 };
 
 if (!SNOWFLAKE_CONFIG.warehouse) {
   console.warn('⚠️  SNOWFLAKE_WAREHOUSE is not set. Listing/metadata will work, but creating Cortex Search services and semantic views requires it.');
 }
+
+if (!SNOWFLAKE_CONFIG.mcpServer) {
+  console.warn('⚠️  SNOWFLAKE_MCP_SERVER is not set. /api/mcp/* endpoints will return 503 until you create an MCP SERVER object and set this env var.');
+}
+
+/**
+ * Lazy MCP client — only constructed when SNOWFLAKE_MCP_SERVER is configured.
+ */
+const getMcpClient = () => {
+  if (!SNOWFLAKE_CONFIG.mcpServer) {
+    return null;
+  }
+  return createSnowflakeMcpClient({
+    host: SNOWFLAKE_CONFIG.host,
+    pat: SNOWFLAKE_CONFIG.pat,
+    database: SNOWFLAKE_CONFIG.database,
+    schema: SNOWFLAKE_CONFIG.schema,
+    mcpServer: SNOWFLAKE_CONFIG.mcpServer,
+  });
+};
+
+const mcpUnavailableResponse = (res) => {
+  res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+    errorParts: [
+      ERROR_MESSAGES.ERROR_PREFIX,
+      'Snowflake MCP is not configured.',
+      '💡 Tip: Create an MCP SERVER in Snowflake (see server/sql/create_mcp_server.sql), then set SNOWFLAKE_MCP_SERVER in your backend .env and restart the server.',
+    ],
+  });
+};
+
+const mcpErrorResponse = (res, error) => {
+  if (error instanceof SnowflakeMcpError) {
+    const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+    const tips = [];
+    if (status === 401 || status === 403) tips.push(ERROR_MESSAGES.TIPS.UNAUTHORIZED);
+    if (status === 404) {
+      tips.push(
+        '💡 Tip: Check SNOWFLAKE_MCP_SERVER, SNOWFLAKE_DATABASE, and SNOWFLAKE_SCHEMA. Confirm the MCP SERVER object exists (SHOW MCP SERVERS IN SCHEMA ...).'
+      );
+    }
+    if (status === 503) tips.push(ERROR_MESSAGES.TIPS.SERVICE_UNAVAILABLE);
+    return res.status(status).json({
+      errorParts: [ERROR_MESSAGES.ERROR_PREFIX, error.message, ...tips].filter(Boolean),
+      details: process.env.NODE_ENV === 'development' ? error.body : undefined,
+    });
+  }
+  return res.status(500).json({ error: sanitizeError(error) });
+};
 
 // ============================================================================
 // Middleware Configuration
@@ -1105,6 +1160,75 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
 });
 
 /**
+ * MCP context (non-sensitive) for the tools demo UI.
+ * GET /api/mcp/context
+ */
+app.get('/api/mcp/context', (req, res) => {
+  res.json({
+    configured: !!SNOWFLAKE_CONFIG.mcpServer,
+    database: SNOWFLAKE_CONFIG.database,
+    schema: SNOWFLAKE_CONFIG.schema,
+    mcpServer: SNOWFLAKE_CONFIG.mcpServer,
+    endpoint: SNOWFLAKE_CONFIG.mcpServer
+      ? getMcpClient().getEndpoint()
+      : null,
+  });
+});
+
+/**
+ * Discover tools exposed by the Snowflake-managed MCP server.
+ * GET /api/mcp/tools
+ */
+app.get('/api/mcp/tools', async (req, res) => {
+  try {
+    const client = getMcpClient();
+    if (!client) return mcpUnavailableResponse(res);
+
+    console.log(`📡 MCP tools/list → ${client.getEndpoint()}`);
+    const tools = await client.listTools();
+    res.json({ tools });
+  } catch (error) {
+    console.error('❌ MCP tools/list failed:', error.message);
+    mcpErrorResponse(res, error);
+  }
+});
+
+/**
+ * Invoke a tool on the Snowflake-managed MCP server.
+ * POST /api/mcp/tools/call
+ * Body: { name: string, arguments?: object }
+ */
+app.post('/api/mcp/tools/call', async (req, res) => {
+  try {
+    const client = getMcpClient();
+    if (!client) return mcpUnavailableResponse(res);
+
+    const name = req.body && typeof req.body.name === 'string' ? req.body.name.trim() : '';
+    if (!name) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        errorParts: [
+          ERROR_MESSAGES.ERROR_PREFIX,
+          'Tool name is required.',
+          '💡 Tip: Pass { "name": "<tool_name>", "arguments": { ... } }.',
+        ],
+      });
+    }
+
+    const args =
+      req.body && req.body.arguments && typeof req.body.arguments === 'object' && !Array.isArray(req.body.arguments)
+        ? req.body.arguments
+        : {};
+
+    console.log(`📡 MCP tools/call → ${name}`);
+    const result = await client.callTool(name, args);
+    res.json({ result });
+  } catch (error) {
+    console.error('❌ MCP tools/call failed:', error.message);
+    mcpErrorResponse(res, error);
+  }
+});
+
+/**
  * Catch-all for undefined routes
  */
 app.use((req, res) => {
@@ -1134,6 +1258,7 @@ app.listen(PORT, () => {
   console.log(`🏔️  Snowflake Host: ${SNOWFLAKE_CONFIG.host}`);
   console.log(`📊 Database: ${SNOWFLAKE_CONFIG.database}`);
   console.log(`📁 Schema: ${SNOWFLAKE_CONFIG.schema}`);
+  console.log(`🧩 MCP Server: ${SNOWFLAKE_CONFIG.mcpServer || '(not configured)'}`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
   console.log('Available endpoints:');
   console.log('  GET  /health                          - Health check');
@@ -1151,6 +1276,9 @@ app.listen(PORT, () => {
   console.log('  POST /api/agents/:agentName/messages  - Send message to agent');
   console.log('  POST /api/threads                     - Create a conversation thread');
   console.log('  GET  /api/threads/:threadId           - Describe a thread (history)');
+  console.log('  GET  /api/mcp/context                 - MCP server config status');
+  console.log('  GET  /api/mcp/tools                   - MCP tools/list');
+  console.log('  POST /api/mcp/tools/call              - MCP tools/call');
   console.log('\n✨ Ready to accept requests!\n');
 });
 
