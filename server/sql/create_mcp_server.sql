@@ -14,16 +14,21 @@
 CREATE OR REPLACE MCP SERVER sales_intelligence.data.cortex_mcp_server
   FROM SPECIFICATION $$
   tools:
-    - title: "Cortex business data agent"
-      name: "cortex_agent"
+    - title: "Sales conversation agent"
+      name: "sales_conversation_agent"
       type: "CORTEX_AGENT_RUN"
-      identifier: "snowflake_intelligence.agents.SALES_CONVERSATION_AGENT"
-      description: "Ask governed business data questions. The agent orchestrates Cortex Analyst, Search, and other configured tools."
+      identifier: "sales_intelligence.data.SALES_CONVERSATION_AGENT"
+      description: "Ask governed sales questions via the Sales Conversation Agent."
+
+    - title: "Sales metrics semantic view"
+      name: "sales_metrics"
+      type: "CORTEX_ANALYST_MESSAGE"
+      identifier: "sales_intelligence.data.sales_metrics"
+      description: "Generate SQL and answer questions over sales deals, customers, stages, reps, product lines, and deal value."
   $$;
 
--- Confirm it exists
-DESCRIBE MCP SERVER snowflake_intelligence.agents.cortex_mcp_server;
-SHOW MCP SERVERS IN SCHEMA snowflake_intelligence.agents;
+SALES_INTELLIGENCE.DATA.SALES_CONVERSATIONSDESCRIBE MCP SERVER sales_intelligence.data.cortex_mcp_server;
+SHOW MCP SERVERS IN SCHEMA sales_intelligence.data;
 
 -- ----------------------------------------------------------------------------
 -- Privileges for the role used by your PAT (replace <MCP_ROLE> and warehouse)
