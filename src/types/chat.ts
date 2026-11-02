@@ -51,6 +51,10 @@ export interface ChatMessage {
     contentIndex?: number;
   }>;
   toolsUsed?: string[];
+  // Ids used to attach feedback to this answer (assistant messages only)
+  requestId?: string;   // X-Snowflake-Request-ID of the :run call
+  runId?: string;       // run_id from the SSE metadata event, when present
+  threadId?: number;
 }
 
 export interface AccordionState {

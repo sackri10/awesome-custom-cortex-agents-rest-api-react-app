@@ -27,13 +27,18 @@ const ERROR_MESSAGES = {
     SERVICE_UNAVAILABLE: '💡 Tip: Check your SNOWFLAKE_HOST in the backend .env file. Make sure it\'s correct and accessible (format: account.snowflakecomputing.com)',
     INVALID_AGENT_NAME: 'Invalid agent name format',
     MESSAGES_REQUIRED: 'Messages array is required',
-    WAREHOUSE_REQUIRED: '💡 Tip: Set SNOWFLAKE_WAREHOUSE in the backend .env file. A warehouse is required to create Cortex Search services and semantic views.'
+    WAREHOUSE_REQUIRED: '💡 Tip: Set SNOWFLAKE_WAREHOUSE in the backend .env file. A warehouse is required to create Cortex Search services and semantic views.',
+    EVAL_WAREHOUSE_REQUIRED: '💡 Tip: Set SNOWFLAKE_WAREHOUSE in the backend .env file. Reading feedback and running evaluations use SQL table functions that need a warehouse.',
+    EVAL_PRIVILEGES: '💡 Tip: Reading feedback/evals needs MONITOR on the agent and the SNOWFLAKE.AI_OBSERVABILITY_READER application role; starting runs also needs EXECUTE TASK, CREATE TASK, CREATE DATASET and READ on the config stage. Set SNOWFLAKE_EVAL_ROLE to a role that has them (see cortex_agent_evals_and_feedback.md, section 2).',
+    EVAL_RUN_NOT_FOUND: '💡 Tip: Check the run name. Results only exist for runs that were actually started against this agent.',
+    EVAL_RUN_EXISTS: (runName) => `💡 Tip: A run named "${runName}" is already tracked. Every eval run needs a unique name.`
   }
 };
 
 // Configuration
 const CONFIG = {
   MAX_AGENT_NAME_LENGTH: 100,
+  MAX_FEEDBACK_MESSAGE_LENGTH: 2000,
   RATE_LIMIT_WINDOW_MS: 15 * 60 * 1000, // 15 minutes
   RATE_LIMIT_MAX_REQUESTS: 100,
   DEFAULT_PORT: 3001

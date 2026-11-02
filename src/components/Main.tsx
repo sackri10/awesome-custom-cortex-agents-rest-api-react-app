@@ -23,9 +23,10 @@ interface SimpleChatInterfaceProps {
   onNavigateToCreate?: () => void;
   onEditAgent?: (agentName: string) => void;
   onNavigateToMcp?: () => void;
+  onNavigateToEvals?: () => void;
 }
 
-const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToCreate, onEditAgent, onNavigateToMcp }) => {
+const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToCreate, onEditAgent, onNavigateToMcp, onNavigateToEvals }) => {
   const theme = useTheme();
   
   // Agent configuration
@@ -446,6 +447,7 @@ const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToC
                   onToggleCharts={handleChartToggle}
                   onToggleAnnotations={annotationsAccordion.toggle}
                   onResendMessage={handleResendMessage}
+                  agentName={selectedAgent}
                 />
               ))}
             </Stack>
@@ -467,6 +469,7 @@ const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToC
         onCreateAgent={onNavigateToCreate}
         onEditAgent={onEditAgent && selectedAgent ? () => onEditAgent(selectedAgent) : undefined}
         onOpenMcpTools={onNavigateToMcp}
+        onOpenEvals={onNavigateToEvals}
       />
     </Box>
   );

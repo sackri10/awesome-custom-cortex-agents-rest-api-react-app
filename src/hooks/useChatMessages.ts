@@ -134,6 +134,13 @@ export const useChatMessages = (selectedAgent: string) => {
         throw error;
       }
 
+      // Remember which Snowflake request produced this answer so it can be rated later.
+      const requestId = response.headers.get('X-Snowflake-Request-ID') || undefined;
+      const threadId = threadIdRef.current ?? undefined;
+      setMessages(prev => prev.map(msg =>
+        msg.id === assistantMessageId ? { ...msg, requestId, threadId } : msg
+      ));
+
       const reader = response.body?.getReader();
       if (!reader) {
         const errorMessage = ERROR_TEXT.NO_READABLE_STREAM;
@@ -167,6 +174,12 @@ export const useChatMessages = (selectedAgent: string) => {
                 // Track the latest assistant message id to use as the next turn's parent.
                 if (data.metadata.role === 'assistant') {
                   parentMessageIdRef.current = data.metadata.message_id;
+                }
+                if (data.metadata.run_id) {
+                  const runId = String(data.metadata.run_id);
+                  setMessages(prev => prev.map(msg =>
+                    msg.id === assistantMessageId ? { ...msg, runId } : msg
+                  ));
                 }
               } else if (currentEvent === 'response.text.delta' && data.text) {
                 assistantText += data.text;

@@ -29,9 +29,10 @@ import {
   Mic as MicIcon,
   PersonAddAlt1 as PersonAddIcon,
   Edit as EditIcon,
-  Hub as HubIcon
+  Hub as HubIcon,
+  Insights as InsightsIcon
 } from '@mui/icons-material';
-import { CHAT_TEXT, CREATE_AGENT_TEXT, MCP_TOOLS_TEXT } from '../../constants/textConstants';
+import { CHAT_TEXT, CREATE_AGENT_TEXT, MCP_TOOLS_TEXT, EVALS_TEXT } from '../../constants/textConstants';
 import { useSpeechRecognition } from '../../hooks/useSpeechRecognition';
 
 interface AgentConfig {
@@ -51,6 +52,7 @@ interface ChatInputProps {
   onCreateAgent?: () => void;
   onEditAgent?: () => void;
   onOpenMcpTools?: () => void;
+  onOpenEvals?: () => void;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({
@@ -64,7 +66,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onNewChat,
   onCreateAgent,
   onEditAgent,
-  onOpenMcpTools
+  onOpenMcpTools,
+  onOpenEvals
 }) => {
   // Sort agents alphabetically for consistent ordering
   const sortedAgents = Object.entries(agents).sort(([, a], [, b]) => 
@@ -449,6 +452,49 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       }}
                     >
                       <HubIcon />
+                    </IconButton>
+                  </Tooltip>
+                )}
+
+                {/* Evals & Feedback Button */}
+                {onOpenEvals && (
+                  <Tooltip title={EVALS_TEXT.NAV_BUTTON_TOOLTIP} arrow>
+                    <IconButton
+                      onClick={onOpenEvals}
+                      disabled={isLoading}
+                      size="small"
+                      sx={{
+                        width: 40,
+                        height: 40,
+                        borderRadius: 1.5,
+                        backgroundColor: (theme) => theme.palette.mode === 'dark'
+                          ? alpha(theme.palette.grey[800], 0.6)
+                          : alpha(theme.palette.grey[100], 0.8),
+                        border: (theme) => theme.palette.mode === 'dark'
+                          ? `1px solid ${alpha(theme.palette.grey[600], 0.3)}`
+                          : `1px solid ${alpha(theme.palette.grey[300], 0.5)}`,
+                        color: 'primary.main',
+                        transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                        '&:hover': {
+                          backgroundColor: (theme) => theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.primary.main, 0.1)
+                            : alpha(theme.palette.primary.main, 0.05),
+                          borderColor: (theme) => alpha(theme.palette.primary.main, 0.5),
+                          color: 'primary.main',
+                          transform: 'translateY(-1px)',
+                          boxShadow: (theme) => `0 4px 12px ${alpha(theme.palette.primary.main, 0.2)}`
+                        },
+                        '&:active': {
+                          transform: 'translateY(0px)'
+                        },
+                        '&:disabled': {
+                          color: 'action.disabled',
+                          backgroundColor: (theme) => alpha(theme.palette.action.disabled, 0.12),
+                          borderColor: (theme) => alpha(theme.palette.action.disabled, 0.12)
+                        }
+                      }}
+                    >
+                      <InsightsIcon />
                     </IconButton>
                   </Tooltip>
                 )}

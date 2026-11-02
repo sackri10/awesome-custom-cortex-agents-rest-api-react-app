@@ -202,6 +202,77 @@ export const TEXT_CONSTANTS = {
     CALL_ERROR: 'Failed to call MCP tool.',
   },
 
+  // Feedback on chat answers + Evals & Feedback page
+  EVALS: {
+    NAV_BUTTON_TOOLTIP: 'Evaluations & feedback',
+    BACK_TO_CHAT: '← Back to chat',
+    PAGE_TITLE: 'Evaluations & Feedback',
+    PAGE_SUBTITLE: 'Run Cortex Agent evaluations against your ground-truth dataset and review what users said about real answers.',
+    AGENT_LABEL: 'Agent',
+    TAB_FEEDBACK: 'User feedback',
+    TAB_EVALS: 'Evaluation runs',
+
+    // Feedback on a chat answer
+    HELPFUL_TOOLTIP: 'Good answer',
+    NOT_HELPFUL_TOOLTIP: 'Bad answer',
+    DIALOG_TITLE_POSITIVE: 'What was good about this answer?',
+    DIALOG_TITLE_NEGATIVE: 'What went wrong?',
+    // Negative categories map to eval metrics: wrong tool → tool_selection_accuracy,
+    // wrong number → answer_correctness / semantic view, made something up → no_fabrication.
+    POSITIVE_CATEGORIES: ['Correct answer', 'Clear explanation', 'Useful chart', 'Fast'],
+    NEGATIVE_CATEGORIES: ['Wrong number', 'Wrong tool', 'Made something up', 'Misunderstood question', 'Incomplete answer', 'Too slow'],
+    COMMENT_LABEL: 'Comment (optional)',
+    COMMENT_PLACEHOLDER: 'e.g. Revenue looks like it includes cancelled orders',
+    SUBMIT: 'Send feedback',
+    SUBMITTING: 'Sending…',
+    CANCEL: 'Cancel',
+    SUBMITTED: 'Thanks, feedback sent to Snowflake.',
+    SUBMIT_ERROR: 'Could not send feedback.',
+    NO_REQUEST_ID: 'No request id was returned for this answer, so the feedback will be recorded against the agent overall.',
+
+    // Feedback tab
+    SINCE_LABEL: 'Since (UTC)',
+    LOAD_FEEDBACK: 'Load feedback',
+    FEEDBACK_NOTE: 'Feedback reaches the observability events table a few minutes after it is sent. Comments show as redacted unless the role has READ UNREDACTED AI OBSERVABILITY EVENTS TABLE.',
+    FEEDBACK_EMPTY: 'No feedback in this window.',
+    FEEDBACK_TOTAL: 'Responses rated',
+    FEEDBACK_POSITIVE_RATE: 'Positive',
+    FEEDBACK_NEGATIVE: 'Negative',
+    FEEDBACK_CATEGORIES: 'Categories',
+    FEEDBACK_LIST: 'Recent feedback',
+    AGENT_LEVEL: 'agent-level',
+
+    // Evals tab
+    NEW_RUN_TITLE: 'Start or track a run',
+    RUN_NAME_LABEL: 'Run name',
+    RUN_NAME_HELPER: 'Must be unique per run. Letters, numbers, "_" and "-".',
+    CONFIG_PATH_LABEL: 'Config YAML on a stage',
+    CONFIG_PATH_REQUIRED: 'Enter the stage path of the config file to enable the buttons.',
+    CONFIG_PATH_INVALID: 'Must start with @ and end in .yaml or .yml, e.g. @SALES_EVAL_DB.DATA.EVAL_CONFIGS/agent_eval_config_rerun.yaml',
+    RUN_NAME_INVALID: 'Use 1-128 letters, numbers, "_" or "-" (no spaces).',
+    CONFIG_PATH_HELPER: 'Fully qualified, e.g. @MY_DB.MY_SCHEMA.EVAL_CONFIGS/agent_eval_config_rerun.yaml',
+    RUN_LABEL_LABEL: 'Label (optional)',
+    START_RUN: 'Start run',
+    TRACK_RUN: 'Track existing run',
+    STARTING: 'Starting…',
+    RUNS_TITLE: 'Tracked runs',
+    RUNS_EMPTY: 'No runs tracked for this agent yet. Start one above, or track a run you started in a worksheet or CI.',
+    REFRESH_STATUS: 'Check status',
+    VIEW_RESULTS: 'Results',
+    UNTRACK: 'Stop tracking',
+    METRICS_TITLE: 'Average score by metric',
+    RECORDS_TITLE: 'Per-question scores',
+    SHOW_WEAK_ONLY: 'Only scores below 0.7',
+    TRACE: 'Trace',
+    TRACE_TITLE: 'Record trace',
+    LOGS: 'Errors & warnings',
+    LOGS_EMPTY: 'No errors or warnings logged for this run.',
+    RESULTS_EMPTY: 'No results yet. Runs take a few minutes; check status until it reports COMPLETED.',
+    RERUN_HINT: 'Scores move between runs even when nothing changed. Run the same config about three times before trusting a number.',
+    LOAD_ERROR_TITLE: 'Request failed',
+    CLOSE: 'Close',
+  },
+
   // Message Labels
   MESSAGE_LABELS: {
     USER: 'You',
@@ -303,6 +374,7 @@ export const HEADER_TEXT = TEXT_CONSTANTS.HEADER;
 export const CHAT_TEXT = TEXT_CONSTANTS.CHAT;
 export const CREATE_AGENT_TEXT = TEXT_CONSTANTS.CREATE_AGENT;
 export const MCP_TOOLS_TEXT = TEXT_CONSTANTS.MCP_TOOLS;
+export const EVALS_TEXT = TEXT_CONSTANTS.EVALS;
 export const MESSAGE_LABELS = TEXT_CONSTANTS.MESSAGE_LABELS;
 export const RESPONSE_TEXT = TEXT_CONSTANTS.RESPONSE;
 export const STATUS_TEXT = TEXT_CONSTANTS.STATUS;

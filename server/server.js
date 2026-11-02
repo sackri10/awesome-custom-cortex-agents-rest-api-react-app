@@ -22,6 +22,13 @@ const {
   createSnowflakeMcpClient,
   SnowflakeMcpError,
 } = require('./mcpClient');
+const {
+  createSqlClient,
+  createObservability,
+  summarizeStatus,
+  SnowflakeSqlError,
+} = require('./evalsClient');
+const evalRuns = require('./evalRunRegistry');
 
 const app = express();
 // Render uses PORT, local dev uses SERVER_PORT
@@ -64,7 +71,10 @@ const SNOWFLAKE_CONFIG = {
   // Listing and metadata (SHOW commands) run without a warehouse.
   warehouse: process.env.SNOWFLAKE_WAREHOUSE || null,
   // Optional: required for MCP tools/list and tools/call endpoints.
-  mcpServer: process.env.SNOWFLAKE_MCP_SERVER || null
+  mcpServer: process.env.SNOWFLAKE_MCP_SERVER || null,
+  // Optional: role for eval/feedback SQL (needs AI_OBSERVABILITY_READER, and the
+  // eval privileges to START runs). Falls back to the PAT user's default role.
+  evalRole: process.env.SNOWFLAKE_EVAL_ROLE || null
 };
 
 if (!SNOWFLAKE_CONFIG.warehouse) {
@@ -155,8 +165,10 @@ const corsOptions = {
     }
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Accept']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Accept'],
+  // Lets the browser read the :run request id, which feedback uses as orig_request_id
+  exposedHeaders: ['X-Snowflake-Request-ID']
 };
 
 app.use(cors(corsOptions));
@@ -662,6 +674,7 @@ app.get('/api/context', (req, res) => {
     schema: SNOWFLAKE_CONFIG.schema,
     warehouse: SNOWFLAKE_CONFIG.warehouse,
     warehouseConfigured: !!SNOWFLAKE_CONFIG.warehouse,
+    evalRole: SNOWFLAKE_CONFIG.evalRole,
   });
 });
 
@@ -1086,6 +1099,12 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
       });
     }
 
+    // Pass the Snowflake request id through so the client can rate this answer
+    const snowflakeRequestId = response.headers.get('x-snowflake-request-id');
+    if (snowflakeRequestId) {
+      res.setHeader('X-Snowflake-Request-ID', snowflakeRequestId);
+    }
+
     // Check if response is streaming
     const contentType = response.headers.get('content-type');
     
@@ -1156,6 +1175,338 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
       
       res.status(500).json({ error: sanitizeError(error) });
     }
+  }
+});
+
+// ============================================================================
+// Agent Feedback & Evaluations
+// ============================================================================
+// Feedback submission uses the dedicated REST endpoint (agents/{name}:feedback).
+// Everything else (reading feedback, starting/reading eval runs) goes through the
+// SQL API, see server/evalsClient.js and cortex_agent_evals_and_feedback.md.
+
+const RUN_NAME_PATTERN = /^[A-Za-z0-9_\-]{1,128}$/;
+const CONFIG_PATH_PATTERN = /^@[A-Za-z0-9_$."\-\/]{1,500}\.ya?ml$/;
+const RECORD_ID_PATTERN = /^[A-Za-z0-9_\-:.]{1,256}$/;
+const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$/;
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9_\-]{1,128}$/;
+
+const getObservability = () => createObservability(
+  createSqlClient({
+    host: SNOWFLAKE_CONFIG.host,
+    pat: SNOWFLAKE_CONFIG.pat,
+    database: SNOWFLAKE_CONFIG.database,
+    schema: SNOWFLAKE_CONFIG.schema,
+    warehouse: SNOWFLAKE_CONFIG.warehouse,
+    role: SNOWFLAKE_CONFIG.evalRole,
+  }),
+  { database: SNOWFLAKE_CONFIG.database, schema: SNOWFLAKE_CONFIG.schema }
+);
+
+const badRequest = (res, message) =>
+  res.status(HTTP_STATUS.BAD_REQUEST).json({ errorParts: [ERROR_MESSAGES.ERROR_PREFIX, message] });
+
+/**
+ * Shared error handler for the SQL-API-backed eval/feedback routes.
+ */
+const evalsErrorResponse = (res, error, label) => {
+  console.error(`❌ ${label}:`, error.message);
+  if (error instanceof SnowflakeSqlError) {
+    const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+    const parts = [ERROR_MESSAGES.ERROR_PREFIX, `${ERROR_MESSAGES.HTTP_ERROR_STATUS} ${error.status}`, error.message];
+    if (/privilege|not authorized|access/i.test(error.message) || status === 403) {
+      parts.push(ERROR_MESSAGES.TIPS.EVAL_PRIVILEGES);
+    } else if (/does not exist/i.test(error.message)) {
+      parts.push(ERROR_MESSAGES.TIPS.EVAL_RUN_NOT_FOUND);
+    } else if (status === HTTP_STATUS.UNAUTHORIZED) {
+      parts.push(ERROR_MESSAGES.TIPS.UNAUTHORIZED);
+    }
+    return res.status(status).json({ errorParts: parts });
+  }
+  if (error.cause?.code === 'ENOTFOUND' || error.message.includes('fetch failed') || error.cause?.code === 'ECONNREFUSED') {
+    return res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+      errorParts: [ERROR_MESSAGES.ERROR_PREFIX, ERROR_MESSAGES.TIPS.SERVICE_UNAVAILABLE],
+    });
+  }
+  res.status(500).json({ error: sanitizeError(error) });
+};
+
+/**
+ * Guard for eval routes: validate the agent name and require a warehouse
+ * (the observability table functions and EXECUTE_AI_EVALUATION need one).
+ */
+const evalsGuard = (req, res) => {
+  if (!validateAgentName(req.params.agentName)) {
+    res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
+    return false;
+  }
+  if (!SNOWFLAKE_CONFIG.warehouse) {
+    res.status(HTTP_STATUS.BAD_REQUEST).json({
+      errorParts: [ERROR_MESSAGES.ERROR_PREFIX, ERROR_MESSAGES.TIPS.EVAL_WAREHOUSE_REQUIRED],
+    });
+    return false;
+  }
+  return true;
+};
+
+/**
+ * Submit feedback for an agent answer (or the agent overall).
+ * POST /api/agents/:agentName/feedback
+ * Body: { positive: boolean, feedback_message?, categories?: string[], orig_request_id?, thread_id? }
+ * → Snowflake POST /api/v2/databases/{db}/schemas/{schema}/agents/{name}:feedback
+ */
+app.post('/api/agents/:agentName/feedback', async (req, res) => {
+  try {
+    const { agentName } = req.params;
+    if (!validateAgentName(agentName)) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
+    }
+
+    const body = req.body || {};
+    if (typeof body.positive !== 'boolean') {
+      return badRequest(res, '"positive" must be true or false.');
+    }
+
+    const payload = { positive: body.positive };
+    if (body.feedback_message != null) {
+      if (typeof body.feedback_message !== 'string' || body.feedback_message.length > CONFIG.MAX_FEEDBACK_MESSAGE_LENGTH) {
+        return badRequest(res, `"feedback_message" must be a string of at most ${CONFIG.MAX_FEEDBACK_MESSAGE_LENGTH} characters.`);
+      }
+      if (body.feedback_message.trim()) payload.feedback_message = body.feedback_message.trim();
+    }
+    if (body.categories != null) {
+      const ok = Array.isArray(body.categories)
+        && body.categories.length <= 20
+        && body.categories.every((c) => typeof c === 'string' && c.length > 0 && c.length <= 100);
+      if (!ok) return badRequest(res, '"categories" must be an array of up to 20 short strings.');
+      if (body.categories.length) payload.categories = body.categories;
+    }
+    if (body.orig_request_id != null) {
+      if (typeof body.orig_request_id !== 'string' || !REQUEST_ID_PATTERN.test(body.orig_request_id)) {
+        return badRequest(res, 'Invalid "orig_request_id".');
+      }
+      payload.orig_request_id = body.orig_request_id;
+    }
+    if (body.thread_id != null) {
+      if (!Number.isInteger(body.thread_id)) return badRequest(res, '"thread_id" must be an integer.');
+      payload.thread_id = body.thread_id;
+    }
+
+    const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${agentName}:feedback`;
+    console.log(`👍 Submitting ${payload.positive ? 'positive' : 'negative'} feedback for agent: ${agentName}`);
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: getSnowflakeAuthHeaders(),
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorParts = [
+        ERROR_MESSAGES.ERROR_PREFIX,
+        `${ERROR_MESSAGES.HTTP_ERROR_STATUS} ${response.status} ${response.statusText}`,
+      ];
+      const errData = await parseJsonSafe(response, null);
+      if (errData && (errData.message || errData.error)) errorParts.push(errData.message || errData.error);
+      if (response.status === HTTP_STATUS.UNAUTHORIZED) errorParts.push(ERROR_MESSAGES.TIPS.UNAUTHORIZED);
+      else if (response.status === HTTP_STATUS.NOT_FOUND) errorParts.push(ERROR_MESSAGES.TIPS.NOT_FOUND_AGENT(agentName));
+      console.error('❌ Snowflake feedback error:', response.status, errorParts.join('\n'));
+      return res.status(response.status).json({ errorParts });
+    }
+
+    const data = await parseJsonSafe(response, { status: 'Feedback submitted successfully' });
+    res.status(response.status).json(data);
+  } catch (error) {
+    evalsErrorResponse(res, error, 'Error submitting feedback');
+  }
+});
+
+/**
+ * Read feedback events for an agent.
+ * GET /api/agents/:agentName/feedback?since=YYYY-MM-DD[ HH:MM:SS]&until=...
+ */
+app.get('/api/agents/:agentName/feedback', async (req, res) => {
+  try {
+    if (!evalsGuard(req, res)) return;
+    const { since, until } = req.query;
+    for (const [label, v] of [['since', since], ['until', until]]) {
+      if (v && !TIMESTAMP_PATTERN.test(String(v))) return badRequest(res, `Invalid "${label}" (use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS, UTC).`);
+    }
+
+    console.log(`📡 Reading feedback for agent: ${req.params.agentName}`);
+    const rows = await getObservability().feedback(req.params.agentName, {
+      since: since ? String(since).replace('T', ' ') : undefined,
+      until: until ? String(until).replace('T', ' ') : undefined,
+    });
+    res.json({ data: rows });
+  } catch (error) {
+    evalsErrorResponse(res, error, 'Error reading feedback');
+  }
+});
+
+/**
+ * List tracked eval runs for an agent (from the local run registry).
+ * GET /api/agents/:agentName/evals/runs
+ */
+app.get('/api/agents/:agentName/evals/runs', (req, res) => {
+  if (!validateAgentName(req.params.agentName)) {
+    return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
+  }
+  res.json({ data: evalRuns.listRuns(req.params.agentName) });
+});
+
+/**
+ * Start an eval run, or just track one started elsewhere (worksheet, CI).
+ * POST /api/agents/:agentName/evals/runs
+ * Body: { runName, configPath: "@DB.SCHEMA.STAGE/config.yaml", label?, start?: boolean (default true) }
+ */
+app.post('/api/agents/:agentName/evals/runs', async (req, res) => {
+  try {
+    if (!evalsGuard(req, res)) return;
+    const { agentName } = req.params;
+    const { runName, configPath, label } = req.body || {};
+    const start = (req.body || {}).start !== false;
+
+    if (!RUN_NAME_PATTERN.test(String(runName || ''))) {
+      return badRequest(res, 'Run name must be 1-128 characters: letters, numbers, "_" or "-".');
+    }
+    if (!CONFIG_PATH_PATTERN.test(String(configPath || ''))) {
+      return badRequest(res, 'Config path must be a staged YAML file, e.g. @MY_DB.MY_SCHEMA.EVAL_CONFIGS/agent_eval_config.yaml');
+    }
+    if (start && evalRuns.getRun(agentName, runName)) {
+      return res.status(HTTP_STATUS.CONFLICT).json({
+        errorParts: [ERROR_MESSAGES.ERROR_PREFIX, ERROR_MESSAGES.TIPS.EVAL_RUN_EXISTS(runName)],
+      });
+    }
+
+    let status = 'TRACKED';
+    let statusRows = null;
+    if (start) {
+      console.log(`🧪 Starting eval run ${runName} for agent ${agentName} (${configPath})`);
+      statusRows = await getObservability().startEval(runName, configPath);
+      status = 'RUNNING';
+    }
+
+    const run = evalRuns.upsertRun({
+      agent: agentName,
+      runName,
+      configPath,
+      label: typeof label === 'string' ? label.slice(0, 200) : undefined,
+      startedAt: new Date().toISOString(),
+      status,
+      startedFromApp: start,
+    });
+    res.status(201).json({ run, result: statusRows });
+  } catch (error) {
+    evalsErrorResponse(res, error, 'Error starting eval run');
+  }
+});
+
+/**
+ * Stop tracking a run (does not delete anything in Snowflake).
+ * DELETE /api/agents/:agentName/evals/runs/:runName
+ */
+app.delete('/api/agents/:agentName/evals/runs/:runName', (req, res) => {
+  const { agentName, runName } = req.params;
+  if (!validateAgentName(agentName) || !RUN_NAME_PATTERN.test(runName)) {
+    return badRequest(res, 'Invalid agent or run name.');
+  }
+  res.json({ removed: evalRuns.removeRun(agentName, runName) });
+});
+
+/**
+ * Check an eval run's status (CALL EXECUTE_AI_EVALUATION('STATUS', ...)).
+ * GET /api/agents/:agentName/evals/runs/:runName/status
+ */
+app.get('/api/agents/:agentName/evals/runs/:runName/status', async (req, res) => {
+  try {
+    if (!evalsGuard(req, res)) return;
+    const { agentName, runName } = req.params;
+    if (!RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid run name.');
+
+    const run = evalRuns.getRun(agentName, runName);
+    const configPath = (run && run.configPath) || req.query.configPath;
+    if (!CONFIG_PATH_PATTERN.test(String(configPath || ''))) {
+      return badRequest(res, 'Unknown run: pass ?configPath=@DB.SCHEMA.STAGE/config.yaml or track the run first.');
+    }
+
+    const rows = await getObservability().evalStatus(runName, configPath);
+    const status = summarizeStatus(rows);
+    if (run) evalRuns.upsertRun({ ...run, status, checkedAt: new Date().toISOString() });
+    res.json({ status, rows });
+  } catch (error) {
+    evalsErrorResponse(res, error, 'Error checking eval status');
+  }
+});
+
+/**
+ * Eval results for one run: per-metric summary plus per-record rows.
+ * GET /api/agents/:agentName/evals/runs/:runName
+ */
+app.get('/api/agents/:agentName/evals/runs/:runName', async (req, res) => {
+  try {
+    if (!evalsGuard(req, res)) return;
+    const { agentName, runName } = req.params;
+    if (!RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid run name.');
+
+    console.log(`📡 Reading eval results for ${agentName} / ${runName}`);
+    // One call for the rows; the summary is derived from them rather than
+    // scanning the event table a second time.
+    const records = await getObservability().agentEvalResults(agentName, runName);
+    const byMetric = new Map();
+    for (const r of records) {
+      const score = typeof r.EVAL_AGG_SCORE === 'number' ? r.EVAL_AGG_SCORE : null;
+      const m = byMetric.get(r.METRIC_NAME) || { metric: r.METRIC_NAME, records: 0, scored: 0, total: 0, min: null };
+      m.records += 1;
+      if (score !== null) {
+        m.scored += 1;
+        m.total += score;
+        m.min = m.min === null ? score : Math.min(m.min, score);
+      }
+      byMetric.set(r.METRIC_NAME, m);
+    }
+    const summary = [...byMetric.values()]
+      .map((m) => ({
+        metric: m.metric,
+        records: m.records,
+        avgScore: m.scored ? Math.round((m.total / m.scored) * 1000) / 1000 : null,
+        minScore: m.min,
+      }))
+      .sort((a, b) => String(a.metric).localeCompare(String(b.metric)));
+
+    res.json({ summary, records });
+  } catch (error) {
+    evalsErrorResponse(res, error, 'Error reading eval results');
+  }
+});
+
+/**
+ * Errors and warnings logged by an eval run.
+ * GET /api/agents/:agentName/evals/runs/:runName/logs
+ */
+app.get('/api/agents/:agentName/evals/runs/:runName/logs', async (req, res) => {
+  try {
+    if (!evalsGuard(req, res)) return;
+    const { agentName, runName } = req.params;
+    if (!RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid run name.');
+    res.json({ data: await getObservability().evalLogs(agentName, runName) });
+  } catch (error) {
+    evalsErrorResponse(res, error, 'Error reading eval logs');
+  }
+});
+
+/**
+ * Step-by-step trace for one eval record.
+ * GET /api/agents/:agentName/evals/records/:recordId/trace
+ */
+app.get('/api/agents/:agentName/evals/records/:recordId/trace', async (req, res) => {
+  try {
+    if (!evalsGuard(req, res)) return;
+    const { agentName, recordId } = req.params;
+    if (!RECORD_ID_PATTERN.test(recordId)) return badRequest(res, 'Invalid record id.');
+    res.json({ data: await getObservability().recordTrace(agentName, recordId) });
+  } catch (error) {
+    evalsErrorResponse(res, error, 'Error reading record trace');
   }
 });
 
@@ -1259,6 +1610,7 @@ app.listen(PORT, () => {
   console.log(`📊 Database: ${SNOWFLAKE_CONFIG.database}`);
   console.log(`📁 Schema: ${SNOWFLAKE_CONFIG.schema}`);
   console.log(`🧩 MCP Server: ${SNOWFLAKE_CONFIG.mcpServer || '(not configured)'}`);
+  console.log(`🧪 Eval role: ${SNOWFLAKE_CONFIG.evalRole || '(PAT default role)'}`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
   console.log('Available endpoints:');
   console.log('  GET  /health                          - Health check');
@@ -1276,6 +1628,12 @@ app.listen(PORT, () => {
   console.log('  POST /api/agents/:agentName/messages  - Send message to agent');
   console.log('  POST /api/threads                     - Create a conversation thread');
   console.log('  GET  /api/threads/:threadId           - Describe a thread (history)');
+  console.log('  POST /api/agents/:agentName/feedback  - Submit feedback on an answer');
+  console.log('  GET  /api/agents/:agentName/feedback  - Read feedback events');
+  console.log('  GET  /api/agents/:agentName/evals/runs            - Tracked eval runs');
+  console.log('  POST /api/agents/:agentName/evals/runs            - Start / track an eval run');
+  console.log('  GET  /api/agents/:agentName/evals/runs/:run       - Eval results');
+  console.log('  GET  /api/agents/:agentName/evals/runs/:run/status - Eval run status');
   console.log('  GET  /api/mcp/context                 - MCP server config status');
   console.log('  GET  /api/mcp/tools                   - MCP tools/list');
   console.log('  POST /api/mcp/tools/call              - MCP tools/call');

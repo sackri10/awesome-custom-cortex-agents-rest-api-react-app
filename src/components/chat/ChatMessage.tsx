@@ -27,6 +27,7 @@ import { SqlQueriesSection } from './SqlQueriesSection';
 import { ChartsSection } from './ChartsSection';
 import { AnnotationsSection } from './AnnotationsSection';
 import { MarkdownFormatter } from './MarkdownFormatter';
+import { MessageFeedback } from './MessageFeedback';
 import { CHAT_TEXT, MESSAGE_LABELS } from '../../constants/textConstants';
 
 interface ChatMessageProps {
@@ -40,6 +41,7 @@ interface ChatMessageProps {
   onToggleCharts: (messageId: string) => void;
   onToggleAnnotations: (messageId: string) => void;
   onResendMessage?: (text: string) => void;
+  agentName?: string;
 }
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({
@@ -52,7 +54,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   onToggleSqlQueries,
   onToggleCharts,
   onToggleAnnotations,
-  onResendMessage
+  onResendMessage,
+  agentName
 }) => {
   const theme = useTheme();
   const [copySuccess, setCopySuccess] = useState(false);
@@ -372,6 +375,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               <CopyIcon sx={{ fontSize: 18 }} />
             </IconButton>
           </Tooltip>
+
+          {/* Thumbs up/down → agent :feedback */}
+          {agentName && <MessageFeedback agentName={agentName} message={message} />}
         </Stack>
       )}
       </Box>
