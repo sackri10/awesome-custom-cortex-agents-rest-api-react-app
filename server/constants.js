@@ -31,6 +31,8 @@ const ERROR_MESSAGES = {
     EVAL_WAREHOUSE_REQUIRED: '💡 Tip: Set SNOWFLAKE_WAREHOUSE in the backend .env file. Reading feedback and running evaluations use SQL table functions that need a warehouse.',
     EVAL_PRIVILEGES: '💡 Tip: Reading feedback/evals needs MONITOR on the agent and the SNOWFLAKE.AI_OBSERVABILITY_READER application role; starting runs also needs EXECUTE TASK, CREATE TASK, CREATE DATASET and READ on the config stage. Set SNOWFLAKE_EVAL_ROLE to a role that has them (see cortex_agent_evals_and_feedback.md, section 2).',
     EVAL_RUN_NOT_FOUND: '💡 Tip: Check the run name. Results only exist for runs that were actually started against this agent.',
+    EVAL_WRITE_PROC: '💡 Tip: Writing a generated config uses the WRITE_TO_STAGE helper procedure from the eval setup script. Create it, point EVAL_WRITE_TO_STAGE_PROC at your own procedure, or upload the YAML to the stage yourself and use an existing config path instead.',
+    EVAL_FULLY_QUALIFIED: '💡 Tip: Snowflake wants fully qualified names in the config (DATABASE.SCHEMA.OBJECT). Rewrite the config file and start the run again with a new run name.',
     EVAL_RUN_EXISTS: (runName) => `💡 Tip: A run named "${runName}" is already tracked. Every eval run needs a unique name.`
   }
 };

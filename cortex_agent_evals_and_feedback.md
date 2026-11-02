@@ -770,7 +770,7 @@ CREATE TABLE sync_state (
 );
 ```
 
-- Analyst eval rows have no `METRIC_NAME` or `RECORD_ID`. Store them with metric `sql_correctness` and use the question text (or its hash) as the record ID.
+- Analyst eval rows do have `METRIC_NAME` (`sql_correctness`) and `RECORD_ID`, per Snowflake's reference. See [docs/ANALYST_EVALS.md](docs/ANALYST_EVALS.md) for the Analyst-specific setup, config and columns.
 - Feedback is append-only in Snowflake (entries can't be modified), which makes incremental loads straightforward.
 
 **Done when:** sample rows from Phase 3 load into the tables without errors.

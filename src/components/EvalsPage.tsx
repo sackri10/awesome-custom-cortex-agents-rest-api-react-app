@@ -1,9 +1,10 @@
 /**
  * EvalsPage
  *
- * Evaluations & feedback for one Cortex Agent:
- *  - User feedback: CORTEX_AGENT_FEEDBACK events sent from the chat thumbs.
- *  - Evaluation runs: start/track EXECUTE_AI_EVALUATION runs and read their scores.
+ * Evaluations & feedback:
+ *  - User feedback (per agent): CORTEX_AGENT_FEEDBACK events sent from the chat thumbs.
+ *  - Evaluation runs (per agent): start/track EXECUTE_AI_EVALUATION runs and read their scores.
+ *  - Analyst (per semantic view): evaluate Cortex Analyst against the view's verified queries.
  *
  * See cortex_agent_evals_and_feedback.md for the Snowflake setup (dataset, config
  * YAML on a stage, privileges).
@@ -28,13 +29,14 @@ import { EVALS_TEXT } from '../constants/textConstants';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { FeedbackPanel } from './evals/FeedbackPanel';
 import { EvalRunsPanel } from './evals/EvalRunsPanel';
+import { AnalystEvalsPanel } from './evals/AnalystEvalsPanel';
 import { ErrorAlert } from './evals/shared';
 
 interface EvalsPageProps {
   onBack: () => void;
 }
 
-type EvalsTab = 'feedback' | 'evals';
+type EvalsTab = 'feedback' | 'evals' | 'analyst';
 
 const EvalsPage: React.FC<EvalsPageProps> = ({ onBack }) => {
   const { loading, error, getVisibleAgents } = useAgentConfig();
@@ -71,37 +73,38 @@ const EvalsPage: React.FC<EvalsPageProps> = ({ onBack }) => {
                 {EVALS_TEXT.PAGE_SUBTITLE}
               </Typography>
             </Box>
-            <TextField
-              select
-              size="small"
-              label={EVALS_TEXT.AGENT_LABEL}
-              value={agentName}
-              onChange={e => setAgentName(e.target.value)}
-              disabled={loading || agents.length === 0}
-              sx={{ minWidth: 240 }}
-            >
-              {agents.map(([key, agent]) => (
-                <MenuItem key={key} value={key}>{agent.displayName}</MenuItem>
-              ))}
-            </TextField>
+            {/* Analyst evals target a semantic view and have their own picker */}
+            {tab !== 'analyst' && (
+              <TextField
+                select
+                size="small"
+                label={EVALS_TEXT.AGENT_LABEL}
+                value={agentName}
+                onChange={e => setAgentName(e.target.value)}
+                disabled={loading || agents.length === 0}
+                sx={{ minWidth: 240 }}
+              >
+                {agents.map(([key, agent]) => (
+                  <MenuItem key={key} value={key}>{agent.displayName}</MenuItem>
+                ))}
+              </TextField>
+            )}
           </Box>
 
-          {loading && (
+          <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ borderBottom: 1, borderColor: 'divider' }}>
+            <Tab value="feedback" label={EVALS_TEXT.TAB_FEEDBACK} />
+            <Tab value="evals" label={EVALS_TEXT.TAB_EVALS} />
+            <Tab value="analyst" label={EVALS_TEXT.TAB_ANALYST} />
+          </Tabs>
+
+          {tab !== 'analyst' && loading && (
             <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}><CircularProgress /></Box>
           )}
-          <ErrorAlert message={error} />
+          {tab !== 'analyst' && <ErrorAlert message={error} />}
 
-          {agentName && (
-            <>
-              <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ borderBottom: 1, borderColor: 'divider' }}>
-                <Tab value="feedback" label={EVALS_TEXT.TAB_FEEDBACK} />
-                <Tab value="evals" label={EVALS_TEXT.TAB_EVALS} />
-              </Tabs>
-              {tab === 'feedback'
-                ? <FeedbackPanel agentName={agentName} />
-                : <EvalRunsPanel agentName={agentName} />}
-            </>
-          )}
+          {tab === 'analyst' && <AnalystEvalsPanel />}
+          {tab === 'feedback' && agentName && <FeedbackPanel agentName={agentName} />}
+          {tab === 'evals' && agentName && <EvalRunsPanel kind="agent" target={agentName} />}
         </Stack>
       </Container>
     </Box>

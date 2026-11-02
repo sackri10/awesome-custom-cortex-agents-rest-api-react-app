@@ -13,6 +13,7 @@
  */
 
 const crypto = require('crypto');
+const yaml = require('js-yaml');
 
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 const JSON_TYPES = new Set(['variant', 'object', 'array']);
@@ -199,11 +200,25 @@ const normalizeFeedback = (row) => {
  * Query catalogue (section 8.3, Phase 3 of the doc). All inputs are bound.
  */
 const createObservability = (client, { database, schema }) => ({
-  startEval: (runName, configPath) =>
-    client.execute("CALL EXECUTE_AI_EVALUATION('START', OBJECT_CONSTRUCT('run_name', ?), ?)", [runName, configPath]),
+  // action: START | STATUS | CANCEL. Same procedure for agent and semantic view runs.
+  evalAction: (action, runName, configPath) => {
+    if (!['START', 'STATUS', 'CANCEL'].includes(action)) throw new Error(`Unsupported eval action: ${action}`);
+    return client.execute(
+      `CALL EXECUTE_AI_EVALUATION('${action}', OBJECT_CONSTRUCT('run_name', ?), ?)`,
+      [runName, configPath]
+    );
+  },
 
-  evalStatus: (runName, configPath) =>
-    client.execute("CALL EXECUTE_AI_EVALUATION('STATUS', OBJECT_CONSTRUCT('run_name', ?), ?)", [runName, configPath]),
+  // Writes a generated config to a stage through the helper procedure from the setup script
+  // (CALL <proc>('<@stage/file.yaml>', '<yaml>')). `proc` must be a validated identifier.
+  writeConfig: (proc, stagePath, yamlText) =>
+    client.execute(`CALL ${proc}(?, ?)`, [stagePath, yamlText]),
+
+  analystEvalResults: (semanticView, runName) =>
+    client.execute(
+      "SELECT * FROM TABLE(SNOWFLAKE.LOCAL.GET_ANALYST_AI_EVALUATION_DATA(?, ?, ?, 'SEMANTIC VIEW', ?))",
+      [database, schema, semanticView, runName]
+    ),
 
   agentEvalResults: (agent, runName) =>
     client.execute(
@@ -253,17 +268,78 @@ const createObservability = (client, { database, schema }) => ({
 });
 
 /**
- * Best-effort read of a STATUS result. The STATUS table format isn't a stable
- * contract, so look for terminal words anywhere in the rows.
+ * Read the STATUS column of EXECUTE_AI_EVALUATION('STATUS', ...). Documented values:
+ * CREATED, INVOCATION_IN_PROGRESS, INVOCATION_COMPLETED, INVOCATION_PARTIALLY_COMPLETED,
+ * COMPUTATION_IN_PROGRESS, COMPLETED, PARTIALLY_COMPLETED, CANCELLED. Anything else is
+ * passed through uppercased so a new value isn't silently misread.
  */
 const summarizeStatus = (rows) => {
-  const text = JSON.stringify(rows || []).toUpperCase();
-  if (/IN_PROGRESS|RUNNING|PENDING|QUEUED|STARTED/.test(text) && !/COMPLETED|SUCCESS/.test(text)) return 'RUNNING';
-  if (/PARTIALLY_COMPLETED/.test(text)) return 'PARTIALLY_COMPLETED';
-  if (/FAILED/.test(text)) return 'FAILED';
-  if (/CANCELLED|CANCELED/.test(text)) return 'CANCELLED';
-  if (/COMPLETED|SUCCESS/.test(text)) return 'COMPLETED';
-  return 'UNKNOWN';
+  const first = Array.isArray(rows) ? rows[0] : null;
+  const raw = first && typeof first.STATUS === 'string' ? first.STATUS.trim().toUpperCase() : '';
+  return raw || 'UNKNOWN';
+};
+
+/** Error messages Snowflake attached to the run (STATUS_DETAILS is an array). */
+const statusDetails = (rows) => {
+  const first = Array.isArray(rows) ? rows[0] : null;
+  const d = first ? first.STATUS_DETAILS : null;
+  if (!d) return [];
+  return (Array.isArray(d) ? d : [d]).map((x) => (typeof x === 'string' ? x : JSON.stringify(x)));
+};
+
+/**
+ * Per-metric summary of GET_*_AI_EVALUATION_DATA rows (one row per question per metric).
+ */
+const summarizeEvalRecords = (records) => {
+  const byMetric = new Map();
+  for (const r of records) {
+    const score = typeof r.EVAL_AGG_SCORE === 'number' ? r.EVAL_AGG_SCORE : null;
+    const m = byMetric.get(r.METRIC_NAME) || { metric: r.METRIC_NAME, records: 0, scored: 0, total: 0, min: null };
+    m.records += 1;
+    if (score !== null) {
+      m.scored += 1;
+      m.total += score;
+      m.min = m.min === null ? score : Math.min(m.min, score);
+    }
+    byMetric.set(r.METRIC_NAME, m);
+  }
+  return [...byMetric.values()]
+    .map((m) => ({
+      metric: m.metric,
+      records: m.records,
+      avgScore: m.scored ? Math.round((m.total / m.scored) * 1000) / 1000 : null,
+      minScore: m.min,
+    }))
+    .sort((a, b) => String(a.metric).localeCompare(String(b.metric)));
+};
+
+const METRIC_VERSION_PATTERN = /^v\d+(_\d+)?$/;
+
+/**
+ * Build a Cortex Analyst (semantic view) eval config. The only supported metric is
+ * sql_correctness and the ground truth is the view's verified queries, optionally
+ * limited to the listed question texts. js-yaml does the quoting, so question text
+ * can't break out of the document.
+ */
+const buildAnalystEvalConfig = ({ semanticViewFqn, metricVersion = 'v3', questions = [] }) => {
+  if (!/^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*){0,2}$/.test(semanticViewFqn || '')) {
+    throw new Error('Invalid semantic view name.');
+  }
+  if (!METRIC_VERSION_PATTERN.test(metricVersion)) {
+    throw new Error('Metric version must look like v3 or v3_0.');
+  }
+  const cleaned = (questions || []).map((q) => String(q).trim()).filter(Boolean);
+  if (cleaned.length > 200 || cleaned.some((q) => q.length > 500)) {
+    throw new Error('Use at most 200 questions of up to 500 characters each.');
+  }
+  const config = {
+    evaluation: {
+      analyst_params: { analyst_name: semanticViewFqn, analyst_type: 'SEMANTIC VIEW' },
+      source_metadata: { type: 'verified_queries', ...(cleaned.length ? { verified_queries: cleaned } : {}) },
+    },
+    metrics: [{ name: 'sql_correctness', version: metricVersion }],
+  };
+  return yaml.dump(config, { lineWidth: -1, noRefs: true });
 };
 
 module.exports = {
@@ -271,5 +347,9 @@ module.exports = {
   createObservability,
   normalizeFeedback,
   summarizeStatus,
+  statusDetails,
+  summarizeEvalRecords,
+  buildAnalystEvalConfig,
+  METRIC_VERSION_PATTERN,
   SnowflakeSqlError,
 };

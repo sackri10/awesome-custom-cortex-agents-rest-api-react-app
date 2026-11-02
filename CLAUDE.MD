@@ -49,7 +49,7 @@ Browser (React, :3000)  ──HTTP──▶  Express proxy (server/, :3001)  ─
 - `server.js` — the whole Express app: CORS (origin allowlist via `ALLOWED_ORIGINS`), rate limiting on `/api/`, request validation, all routes. Two upstream styles: **REST** endpoints (`/api/v2/databases/.../agents...`, `/api/v2/cortex/threads`) for agents/chat/threads, and the **SQL API** (`POST /api/v2/statements`) for object listing/creation via `SHOW`/`CREATE`.
 - `snowflakeDdl.js` — builds `CREATE CORTEX SEARCH SERVICE` / `CREATE SEMANTIC VIEW` DDL from structured request bodies. Identifiers are validated (not string-injected); SQL expressions in semantic views are intentionally free text.
 - `evalsClient.js` — SQL API client for agent evals + feedback (bind variables, 202 polling, partitions, typed values, 429/5xx retry) and the query catalogue over `SNOWFLAKE.LOCAL.GET_AI_EVALUATION_DATA` / `GET_AI_OBSERVABILITY_EVENTS` / `EXECUTE_AI_EVALUATION`. JS port of `snowflake_evals_feedback_client.py`; setup and privileges are in `cortex_agent_evals_and_feedback.md`.
-- `evalRunRegistry.js` — JSON-file registry of eval runs (Snowflake has no "list runs" function). Default `server/.data/eval_runs.json`, override with `EVAL_RUNS_FILE`.
+- `evalRunRegistry.js` — JSON-file registry of eval runs (Snowflake has no "list runs" function), keyed by kind (`agent` | `analyst`), target and run name. Default `server/.data/eval_runs.json`, override with `EVAL_RUNS_FILE`.
 - `constants.js` — `HTTP_STATUS`, `ERROR_MESSAGES` (including the `TIPS.*` hints surfaced to the UI), `CONFIG` (ports, rate limits, name-length caps).
 
 Errors are returned as `{ errorParts: [...] }` (an array of message lines) so the frontend can render structured, multi-line error messages with configuration hints.
@@ -59,7 +59,7 @@ Errors are returned as `{ errorParts: [...] }` (an array of message lines) so th
 - `components/Main.tsx` — the chat interface; `components/chat/*` are its subcomponents (header/agent selector, input with voice, message rendering, SQL/charts/annotations/thinking sections).
 - `components/CreateAgentPage.tsx` + `components/objects/*` — the agent builder and the Cortex Search / semantic-view creation forms.
 - `hooks/` — the real logic lives here: `useChatMessages` (SSE streaming + thread memory), `useAgentConfig` (loads agent list/config), `useSpeechRecognition` (Web Speech API voice input), `useAccordionState`.
-- `components/EvalsPage.tsx` + `components/evals/*` — Evaluations & Feedback page (feedback stats/list, start/track eval runs, metric scores, per-question grid, traces). `components/chat/MessageFeedback.tsx` is the thumbs up/down on each answer.
+- `components/EvalsPage.tsx` + `components/evals/*` — Evaluations & Feedback page (feedback stats/list, start/track eval runs, metric scores, per-question grid, traces). `components/chat/MessageFeedback.tsx` is the thumbs up/down on each answer. The page has three tabs: user feedback, agent eval runs, and **Cortex Analyst** (semantic view) evals. One `EvalRunsPanel` serves both agents and semantic views via `kind`; the Analyst flow can generate the config YAML and write it to a stage. See `docs/ANALYST_EVALS.md`.
 - `services/snowflakeAgentsApi.ts`, `services/snowflakeObjectsApi.ts` and `services/snowflakeEvalsApi.ts` — typed wrappers around the backend proxy endpoints.
 - `config/env.ts` validates env vars; `contexts/ThemeContext.tsx` + `theme/theme.ts` drive light/dark MUI theming.
 

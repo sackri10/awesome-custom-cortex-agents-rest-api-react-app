@@ -14,6 +14,8 @@ export interface SnowflakeContext {
   schema: string;
   warehouse: string | null;
   warehouseConfigured: boolean;
+  /** Default stage for generated eval configs, e.g. @MY_DB.MY_SCHEMA.EVAL_CONFIGS */
+  evalConfigStage?: string;
 }
 
 export interface SchemaObject {

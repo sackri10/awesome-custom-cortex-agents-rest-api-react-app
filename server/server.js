@@ -26,6 +26,9 @@ const {
   createSqlClient,
   createObservability,
   summarizeStatus,
+  statusDetails,
+  summarizeEvalRecords,
+  buildAnalystEvalConfig,
   SnowflakeSqlError,
 } = require('./evalsClient');
 const evalRuns = require('./evalRunRegistry');
@@ -76,6 +79,10 @@ const SNOWFLAKE_CONFIG = {
   // eval privileges to START runs). Falls back to the PAT user's default role.
   evalRole: process.env.SNOWFLAKE_EVAL_ROLE || null
 };
+
+// Default stage offered in the UI when generating eval configs
+const EVAL_CONFIG_STAGE =
+  process.env.EVAL_CONFIG_STAGE || `@${SNOWFLAKE_CONFIG.database}.${SNOWFLAKE_CONFIG.schema}.EVAL_CONFIGS`;
 
 if (!SNOWFLAKE_CONFIG.warehouse) {
   console.warn('⚠️  SNOWFLAKE_WAREHOUSE is not set. Listing/metadata will work, but creating Cortex Search services and semantic views requires it.');
@@ -675,6 +682,7 @@ app.get('/api/context', (req, res) => {
     warehouse: SNOWFLAKE_CONFIG.warehouse,
     warehouseConfigured: !!SNOWFLAKE_CONFIG.warehouse,
     evalRole: SNOWFLAKE_CONFIG.evalRole,
+    evalConfigStage: EVAL_CONFIG_STAGE,
   });
 });
 
@@ -1214,7 +1222,11 @@ const evalsErrorResponse = (res, error, label) => {
   if (error instanceof SnowflakeSqlError) {
     const status = error.status >= 400 && error.status < 600 ? error.status : 500;
     const parts = [ERROR_MESSAGES.ERROR_PREFIX, `${ERROR_MESSAGES.HTTP_ERROR_STATUS} ${error.status}`, error.message];
-    if (/privilege|not authorized|access/i.test(error.message) || status === 403) {
+    if (/WRITE_TO_STAGE/i.test(error.message)) {
+      parts.push(ERROR_MESSAGES.TIPS.EVAL_WRITE_PROC);
+    } else if (/fully qualified/i.test(error.message)) {
+      parts.push(ERROR_MESSAGES.TIPS.EVAL_FULLY_QUALIFIED);
+    } else if (/privilege|not authorized|access/i.test(error.message) || status === 403) {
       parts.push(ERROR_MESSAGES.TIPS.EVAL_PRIVILEGES);
     } else if (/does not exist/i.test(error.message)) {
       parts.push(ERROR_MESSAGES.TIPS.EVAL_RUN_NOT_FOUND);
@@ -1344,171 +1356,231 @@ app.get('/api/agents/:agentName/feedback', async (req, res) => {
   }
 });
 
-/**
- * List tracked eval runs for an agent (from the local run registry).
- * GET /api/agents/:agentName/evals/runs
- */
-app.get('/api/agents/:agentName/evals/runs', (req, res) => {
-  if (!validateAgentName(req.params.agentName)) {
-    return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
-  }
-  res.json({ data: evalRuns.listRuns(req.params.agentName) });
-});
+const SEMANTIC_VIEW_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+const STAGE_PATTERN = /^@[A-Za-z0-9_$."\-\/]{1,300}$/;
+const WRITE_PROC_PATTERN = /^[A-Za-z0-9_$.]+$/;
+
+// Helper procedure from the setup script: CALL <proc>('@stage/file.yaml', '<yaml>')
+const EVAL_WRITE_TO_STAGE_PROC =
+  process.env.EVAL_WRITE_TO_STAGE_PROC || `${SNOWFLAKE_CONFIG.database}.${SNOWFLAKE_CONFIG.schema}.WRITE_TO_STAGE`;
+if (!WRITE_PROC_PATTERN.test(EVAL_WRITE_TO_STAGE_PROC)) {
+  console.error('❌ EVAL_WRITE_TO_STAGE_PROC must be an identifier like DB.SCHEMA.PROC');
+  process.exit(1);
+}
 
 /**
- * Start an eval run, or just track one started elsewhere (worksheet, CI).
- * POST /api/agents/:agentName/evals/runs
- * Body: { runName, configPath: "@DB.SCHEMA.STAGE/config.yaml", label?, start?: boolean (default true) }
+ * Register the eval routes for one kind of target. Agents and semantic views (Cortex
+ * Analyst) share EXECUTE_AI_EVALUATION; they differ in the config format, the results
+ * function and which extras exist (traces and run logs are agent-only).
+ *
+ *   kind 'agent'   → /api/agents/:target/evals/...
+ *   kind 'analyst' → /api/semantic-views/:target/evals/...
  */
-app.post('/api/agents/:agentName/evals/runs', async (req, res) => {
-  try {
-    if (!evalsGuard(req, res)) return;
-    const { agentName } = req.params;
-    const { runName, configPath, label } = req.body || {};
-    const start = (req.body || {}).start !== false;
+const registerEvalRoutes = (kind, base) => {
+  const isAgent = kind === 'agent';
+  const validTarget = (name) => (isAgent ? validateAgentName(name) : SEMANTIC_VIEW_NAME_PATTERN.test(String(name || '')));
 
-    if (!RUN_NAME_PATTERN.test(String(runName || ''))) {
-      return badRequest(res, 'Run name must be 1-128 characters: letters, numbers, "_" or "-".');
+  // Validate the target and require a warehouse (the table functions and
+  // EXECUTE_AI_EVALUATION need one).
+  const guard = (req, res) => {
+    if (!validTarget(req.params.target)) {
+      badRequest(res, isAgent ? ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME : 'Invalid semantic view name.');
+      return false;
     }
-    if (!CONFIG_PATH_PATTERN.test(String(configPath || ''))) {
-      return badRequest(res, 'Config path must be a staged YAML file, e.g. @MY_DB.MY_SCHEMA.EVAL_CONFIGS/agent_eval_config.yaml');
+    if (!SNOWFLAKE_CONFIG.warehouse) {
+      badRequest(res, ERROR_MESSAGES.TIPS.EVAL_WAREHOUSE_REQUIRED);
+      return false;
     }
-    if (start && evalRuns.getRun(agentName, runName)) {
-      return res.status(HTTP_STATUS.CONFLICT).json({
-        errorParts: [ERROR_MESSAGES.ERROR_PREFIX, ERROR_MESSAGES.TIPS.EVAL_RUN_EXISTS(runName)],
+    return true;
+  };
+
+  /** GET {base}/runs — tracked runs from the local registry */
+  app.get(`${base}/runs`, (req, res) => {
+    if (!validTarget(req.params.target)) return badRequest(res, 'Invalid name.');
+    res.json({ data: evalRuns.listRuns(kind, req.params.target) });
+  });
+
+  /**
+   * POST {base}/runs — start a run, or just track one started elsewhere.
+   * Body: { runName, configPath, label?, start?: boolean (default true) }
+   * Analyst runs may instead send `generate: { stage, metricVersion?, questions? }`: the
+   * config is built from those values, written to <stage>/<runName>.yaml, then started.
+   */
+  app.post(`${base}/runs`, async (req, res) => {
+    try {
+      if (!guard(req, res)) return;
+      const { target } = req.params;
+      const { runName, label, generate } = req.body || {};
+      let { configPath } = req.body || {};
+      const start = (req.body || {}).start !== false;
+
+      if (!RUN_NAME_PATTERN.test(String(runName || ''))) {
+        return badRequest(res, 'Run name must be 1-128 characters: letters, numbers, "_" or "-".');
+      }
+      if (generate && (isAgent || !start)) {
+        return badRequest(res, 'Config generation is only available when starting a semantic view run.');
+      }
+      if (start && evalRuns.getRun(kind, target, runName)) {
+        return res.status(HTTP_STATUS.CONFLICT).json({
+          errorParts: [ERROR_MESSAGES.ERROR_PREFIX, ERROR_MESSAGES.TIPS.EVAL_RUN_EXISTS(runName)],
+        });
+      }
+
+      let yamlText;
+      let metricVersion;
+      if (generate) {
+        const stage = String(generate.stage || '').replace(/\/+$/, '');
+        if (!STAGE_PATTERN.test(stage) || /\.ya?ml$/i.test(stage) || stage.includes('..')) {
+          return badRequest(res, 'Stage must look like @MY_DB.MY_SCHEMA.EVAL_CONFIGS (a stage, not a file).');
+        }
+        metricVersion = generate.metricVersion || 'v3';
+        try {
+          yamlText = buildAnalystEvalConfig({
+            semanticViewFqn: `${SNOWFLAKE_CONFIG.database}.${SNOWFLAKE_CONFIG.schema}.${target}`,
+            metricVersion,
+            questions: Array.isArray(generate.questions) ? generate.questions : [],
+          });
+        } catch (buildError) {
+          return badRequest(res, buildError.message);
+        }
+        configPath = `${stage}/${runName}.yaml`;
+      }
+
+      if (!CONFIG_PATH_PATTERN.test(String(configPath || ''))) {
+        return badRequest(res, 'Config path must be a staged YAML file, e.g. @MY_DB.MY_SCHEMA.EVAL_CONFIGS/eval_config.yaml');
+      }
+
+      const obs = getObservability();
+      if (yamlText) {
+        console.log(`📝 Writing eval config to ${configPath}`);
+        await obs.writeConfig(EVAL_WRITE_TO_STAGE_PROC, configPath, yamlText);
+      }
+
+      let status = 'TRACKED';
+      let result = null;
+      if (start) {
+        console.log(`🧪 Starting ${kind} eval run ${runName} for ${target} (${configPath})`);
+        result = await obs.evalAction('START', runName, configPath);
+        status = 'RUNNING';
+      }
+
+      const run = evalRuns.upsertRun({
+        kind,
+        target,
+        runName,
+        configPath,
+        label: typeof label === 'string' ? label.slice(0, 200) : undefined,
+        metricVersion,
+        startedAt: new Date().toISOString(),
+        status,
+        startedFromApp: start,
       });
+      res.status(201).json({ run, result, config: yamlText });
+    } catch (error) {
+      evalsErrorResponse(res, error, 'Error starting eval run');
     }
+  });
 
-    let status = 'TRACKED';
-    let statusRows = null;
-    if (start) {
-      console.log(`🧪 Starting eval run ${runName} for agent ${agentName} (${configPath})`);
-      statusRows = await getObservability().startEval(runName, configPath);
-      status = 'RUNNING';
-    }
+  /** DELETE {base}/runs/:runName — stop tracking (nothing is deleted in Snowflake) */
+  app.delete(`${base}/runs/:runName`, (req, res) => {
+    const { target, runName } = req.params;
+    if (!validTarget(target) || !RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid name or run name.');
+    res.json({ removed: evalRuns.removeRun(kind, target, runName) });
+  });
 
-    const run = evalRuns.upsertRun({
-      agent: agentName,
-      runName,
-      configPath,
-      label: typeof label === 'string' ? label.slice(0, 200) : undefined,
-      startedAt: new Date().toISOString(),
-      status,
-      startedFromApp: start,
-    });
-    res.status(201).json({ run, result: statusRows });
-  } catch (error) {
-    evalsErrorResponse(res, error, 'Error starting eval run');
-  }
-});
-
-/**
- * Stop tracking a run (does not delete anything in Snowflake).
- * DELETE /api/agents/:agentName/evals/runs/:runName
- */
-app.delete('/api/agents/:agentName/evals/runs/:runName', (req, res) => {
-  const { agentName, runName } = req.params;
-  if (!validateAgentName(agentName) || !RUN_NAME_PATTERN.test(runName)) {
-    return badRequest(res, 'Invalid agent or run name.');
-  }
-  res.json({ removed: evalRuns.removeRun(agentName, runName) });
-});
-
-/**
- * Check an eval run's status (CALL EXECUTE_AI_EVALUATION('STATUS', ...)).
- * GET /api/agents/:agentName/evals/runs/:runName/status
- */
-app.get('/api/agents/:agentName/evals/runs/:runName/status', async (req, res) => {
-  try {
-    if (!evalsGuard(req, res)) return;
-    const { agentName, runName } = req.params;
-    if (!RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid run name.');
-
-    const run = evalRuns.getRun(agentName, runName);
+  /** Look up a run's config path: from the registry, or ?configPath= for an untracked run */
+  const configPathFor = (req, res) => {
+    const run = evalRuns.getRun(kind, req.params.target, req.params.runName);
     const configPath = (run && run.configPath) || req.query.configPath;
     if (!CONFIG_PATH_PATTERN.test(String(configPath || ''))) {
-      return badRequest(res, 'Unknown run: pass ?configPath=@DB.SCHEMA.STAGE/config.yaml or track the run first.');
+      badRequest(res, 'Unknown run: pass ?configPath=@DB.SCHEMA.STAGE/config.yaml or track the run first.');
+      return null;
     }
+    return { run, configPath };
+  };
 
-    const rows = await getObservability().evalStatus(runName, configPath);
-    const status = summarizeStatus(rows);
-    if (run) evalRuns.upsertRun({ ...run, status, checkedAt: new Date().toISOString() });
-    res.json({ status, rows });
-  } catch (error) {
-    evalsErrorResponse(res, error, 'Error checking eval status');
-  }
-});
+  /** GET {base}/runs/:runName/status — CALL EXECUTE_AI_EVALUATION('STATUS', ...) */
+  app.get(`${base}/runs/:runName/status`, async (req, res) => {
+    try {
+      if (!guard(req, res)) return;
+      const { target, runName } = req.params;
+      if (!RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid run name.');
+      const found = configPathFor(req, res);
+      if (!found) return;
 
-/**
- * Eval results for one run: per-metric summary plus per-record rows.
- * GET /api/agents/:agentName/evals/runs/:runName
- */
-app.get('/api/agents/:agentName/evals/runs/:runName', async (req, res) => {
-  try {
-    if (!evalsGuard(req, res)) return;
-    const { agentName, runName } = req.params;
-    if (!RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid run name.');
-
-    console.log(`📡 Reading eval results for ${agentName} / ${runName}`);
-    // One call for the rows; the summary is derived from them rather than
-    // scanning the event table a second time.
-    const records = await getObservability().agentEvalResults(agentName, runName);
-    const byMetric = new Map();
-    for (const r of records) {
-      const score = typeof r.EVAL_AGG_SCORE === 'number' ? r.EVAL_AGG_SCORE : null;
-      const m = byMetric.get(r.METRIC_NAME) || { metric: r.METRIC_NAME, records: 0, scored: 0, total: 0, min: null };
-      m.records += 1;
-      if (score !== null) {
-        m.scored += 1;
-        m.total += score;
-        m.min = m.min === null ? score : Math.min(m.min, score);
-      }
-      byMetric.set(r.METRIC_NAME, m);
+      const rows = await getObservability().evalAction('STATUS', runName, found.configPath);
+      const status = summarizeStatus(rows);
+      if (found.run) evalRuns.upsertRun({ ...found.run, kind, target, status, checkedAt: new Date().toISOString() });
+      res.json({ status, statusDetails: statusDetails(rows), rows });
+    } catch (error) {
+      evalsErrorResponse(res, error, 'Error checking eval status');
     }
-    const summary = [...byMetric.values()]
-      .map((m) => ({
-        metric: m.metric,
-        records: m.records,
-        avgScore: m.scored ? Math.round((m.total / m.scored) * 1000) / 1000 : null,
-        minScore: m.min,
-      }))
-      .sort((a, b) => String(a.metric).localeCompare(String(b.metric)));
+  });
 
-    res.json({ summary, records });
-  } catch (error) {
-    evalsErrorResponse(res, error, 'Error reading eval results');
-  }
-});
+  /** POST {base}/runs/:runName/cancel — CALL EXECUTE_AI_EVALUATION('CANCEL', ...) */
+  app.post(`${base}/runs/:runName/cancel`, async (req, res) => {
+    try {
+      if (!guard(req, res)) return;
+      const { target, runName } = req.params;
+      if (!RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid run name.');
+      const found = configPathFor(req, res);
+      if (!found) return;
 
-/**
- * Errors and warnings logged by an eval run.
- * GET /api/agents/:agentName/evals/runs/:runName/logs
- */
-app.get('/api/agents/:agentName/evals/runs/:runName/logs', async (req, res) => {
-  try {
-    if (!evalsGuard(req, res)) return;
-    const { agentName, runName } = req.params;
-    if (!RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid run name.');
-    res.json({ data: await getObservability().evalLogs(agentName, runName) });
-  } catch (error) {
-    evalsErrorResponse(res, error, 'Error reading eval logs');
-  }
-});
+      const result = await getObservability().evalAction('CANCEL', runName, found.configPath);
+      if (found.run) evalRuns.upsertRun({ ...found.run, kind, target, status: 'CANCELLED', checkedAt: new Date().toISOString() });
+      res.json({ result });
+    } catch (error) {
+      evalsErrorResponse(res, error, 'Error cancelling eval run');
+    }
+  });
 
-/**
- * Step-by-step trace for one eval record.
- * GET /api/agents/:agentName/evals/records/:recordId/trace
- */
-app.get('/api/agents/:agentName/evals/records/:recordId/trace', async (req, res) => {
-  try {
-    if (!evalsGuard(req, res)) return;
-    const { agentName, recordId } = req.params;
-    if (!RECORD_ID_PATTERN.test(recordId)) return badRequest(res, 'Invalid record id.');
-    res.json({ data: await getObservability().recordTrace(agentName, recordId) });
-  } catch (error) {
-    evalsErrorResponse(res, error, 'Error reading record trace');
-  }
-});
+  /** GET {base}/runs/:runName — results: per-metric summary plus per-record rows */
+  app.get(`${base}/runs/:runName`, async (req, res) => {
+    try {
+      if (!guard(req, res)) return;
+      const { target, runName } = req.params;
+      if (!RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid run name.');
+
+      console.log(`📡 Reading ${kind} eval results for ${target} / ${runName}`);
+      // One call for the rows; the summary is derived from them rather than
+      // scanning the event table a second time.
+      const obs = getObservability();
+      const records = isAgent ? await obs.agentEvalResults(target, runName) : await obs.analystEvalResults(target, runName);
+      res.json({ summary: summarizeEvalRecords(records), records });
+    } catch (error) {
+      evalsErrorResponse(res, error, 'Error reading eval results');
+    }
+  });
+
+  if (!isAgent) return;
+
+  /** GET {base}/runs/:runName/logs — errors and warnings logged by an agent eval run */
+  app.get(`${base}/runs/:runName/logs`, async (req, res) => {
+    try {
+      if (!guard(req, res)) return;
+      const { target, runName } = req.params;
+      if (!RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid run name.');
+      res.json({ data: await getObservability().evalLogs(target, runName) });
+    } catch (error) {
+      evalsErrorResponse(res, error, 'Error reading eval logs');
+    }
+  });
+
+  /** GET {base}/records/:recordId/trace — step-by-step trace for one agent eval record */
+  app.get(`${base}/records/:recordId/trace`, async (req, res) => {
+    try {
+      if (!guard(req, res)) return;
+      const { target, recordId } = req.params;
+      if (!RECORD_ID_PATTERN.test(recordId)) return badRequest(res, 'Invalid record id.');
+      res.json({ data: await getObservability().recordTrace(target, recordId) });
+    } catch (error) {
+      evalsErrorResponse(res, error, 'Error reading record trace');
+    }
+  });
+};
+
+registerEvalRoutes('agent', '/api/agents/:target/evals');
+registerEvalRoutes('analyst', '/api/semantic-views/:target/evals');
 
 /**
  * MCP context (non-sensitive) for the tools demo UI.
@@ -1630,10 +1702,8 @@ app.listen(PORT, () => {
   console.log('  GET  /api/threads/:threadId           - Describe a thread (history)');
   console.log('  POST /api/agents/:agentName/feedback  - Submit feedback on an answer');
   console.log('  GET  /api/agents/:agentName/feedback  - Read feedback events');
-  console.log('  GET  /api/agents/:agentName/evals/runs            - Tracked eval runs');
-  console.log('  POST /api/agents/:agentName/evals/runs            - Start / track an eval run');
-  console.log('  GET  /api/agents/:agentName/evals/runs/:run       - Eval results');
-  console.log('  GET  /api/agents/:agentName/evals/runs/:run/status - Eval run status');
+  console.log('  *    /api/agents/:agent/evals/...         - Agent eval runs, status, cancel, results, logs, traces');
+  console.log('  *    /api/semantic-views/:view/evals/...  - Cortex Analyst eval runs, status, cancel, results');
   console.log('  GET  /api/mcp/context                 - MCP server config status');
   console.log('  GET  /api/mcp/tools                   - MCP tools/list');
   console.log('  POST /api/mcp/tools/call              - MCP tools/call');

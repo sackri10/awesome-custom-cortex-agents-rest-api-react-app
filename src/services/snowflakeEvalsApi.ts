@@ -30,24 +30,60 @@ export interface FeedbackEvent {
   raw: Record<string, unknown>;
 }
 
+/** What an eval run evaluates: a Cortex Agent, or a semantic view (Cortex Analyst). */
+export type EvalKind = 'agent' | 'analyst';
+
+/**
+ * Status as reported by EXECUTE_AI_EVALUATION('STATUS'), plus two of our own: TRACKED
+ * (registered but never checked) and RUNNING (started from the app, not yet polled).
+ */
 export type EvalRunStatus =
   | 'TRACKED'
   | 'RUNNING'
+  | 'CREATED'
+  | 'INVOCATION_IN_PROGRESS'
+  | 'INVOCATION_COMPLETED'
+  | 'INVOCATION_PARTIALLY_COMPLETED'
+  | 'COMPUTATION_IN_PROGRESS'
   | 'COMPLETED'
   | 'PARTIALLY_COMPLETED'
-  | 'FAILED'
   | 'CANCELLED'
   | 'UNKNOWN';
 
+/** Statuses where results exist and nothing more will change. */
+export const FINISHED_STATUSES: EvalRunStatus[] = ['COMPLETED', 'PARTIALLY_COMPLETED', 'CANCELLED'];
+
+/** Statuses worth polling: the run is, or may still be, in progress. */
+export const IN_PROGRESS_STATUSES: EvalRunStatus[] = [
+  'RUNNING',
+  'CREATED',
+  'INVOCATION_IN_PROGRESS',
+  'INVOCATION_COMPLETED',
+  'INVOCATION_PARTIALLY_COMPLETED',
+  'COMPUTATION_IN_PROGRESS'
+];
+
 export interface EvalRun {
-  agent: string;
+  kind: EvalKind;
+  /** Agent name or semantic view name */
+  target: string;
   runName: string;
   configPath: string;
   label?: string;
+  metricVersion?: string;
   startedAt: string;
   checkedAt?: string;
   status: EvalRunStatus;
   startedFromApp?: boolean;
+}
+
+/** Config the backend should generate (semantic view runs only). */
+export interface GenerateEvalConfig {
+  /** Stage to write to, e.g. @MY_DB.MY_SCHEMA.EVAL_CONFIGS. The file is <stage>/<runName>.yaml */
+  stage: string;
+  metricVersion?: string;
+  /** Verified-query question texts to evaluate. Empty = all of them. */
+  questions?: string[];
 }
 
 export interface EvalMetricSummary {
@@ -141,37 +177,46 @@ export const fetchAgentFeedback = async (
 
 // ---- Eval runs --------------------------------------------------------------
 
-export const listEvalRuns = async (agentName: string): Promise<EvalRun[]> => {
-  const data = await request(`${agentPath(agentName)}/evals/runs`);
+const evalBase = (kind: EvalKind, target: string) =>
+  kind === 'agent'
+    ? `${agentPath(target)}/evals`
+    : `/api/semantic-views/${encodeURIComponent(target)}/evals`;
+
+export const listEvalRuns = async (kind: EvalKind, target: string): Promise<EvalRun[]> => {
+  const data = await request(`${evalBase(kind, target)}/runs`);
   return data.data || [];
 };
 
 export const startEvalRun = async (
-  agentName: string,
-  body: { runName: string; configPath: string; label?: string; start?: boolean }
-): Promise<EvalRun> => {
-  const data = await request(`${agentPath(agentName)}/evals/runs`, jsonInit('POST', body));
-  return data.run;
-};
+  kind: EvalKind,
+  target: string,
+  body: { runName: string; configPath?: string; label?: string; start?: boolean; generate?: GenerateEvalConfig }
+): Promise<{ run: EvalRun; config?: string }> =>
+  request(`${evalBase(kind, target)}/runs`, jsonInit('POST', body));
 
-export const untrackEvalRun = (agentName: string, runName: string): Promise<{ removed: boolean }> =>
-  request(`${agentPath(agentName)}/evals/runs/${encodeURIComponent(runName)}`, jsonInit('DELETE'));
+export const untrackEvalRun = (kind: EvalKind, target: string, runName: string): Promise<{ removed: boolean }> =>
+  request(`${evalBase(kind, target)}/runs/${encodeURIComponent(runName)}`, jsonInit('DELETE'));
 
 export const fetchEvalRunStatus = (
-  agentName: string,
+  kind: EvalKind,
+  target: string,
   runName: string
-): Promise<{ status: EvalRunStatus; rows: Record<string, unknown>[] }> =>
-  request(`${agentPath(agentName)}/evals/runs/${encodeURIComponent(runName)}/status`);
+): Promise<{ status: EvalRunStatus; statusDetails: string[]; rows: Record<string, unknown>[] }> =>
+  request(`${evalBase(kind, target)}/runs/${encodeURIComponent(runName)}/status`);
 
-export const fetchEvalRunResults = (agentName: string, runName: string): Promise<EvalRunResults> =>
-  request(`${agentPath(agentName)}/evals/runs/${encodeURIComponent(runName)}`);
+export const cancelEvalRun = (kind: EvalKind, target: string, runName: string): Promise<unknown> =>
+  request(`${evalBase(kind, target)}/runs/${encodeURIComponent(runName)}/cancel`, jsonInit('POST'));
 
+export const fetchEvalRunResults = (kind: EvalKind, target: string, runName: string): Promise<EvalRunResults> =>
+  request(`${evalBase(kind, target)}/runs/${encodeURIComponent(runName)}`);
+
+// Run logs and record traces exist for agent evals only.
 export const fetchEvalRunLogs = async (agentName: string, runName: string): Promise<Record<string, unknown>[]> => {
-  const data = await request(`${agentPath(agentName)}/evals/runs/${encodeURIComponent(runName)}/logs`);
+  const data = await request(`${evalBase('agent', agentName)}/runs/${encodeURIComponent(runName)}/logs`);
   return data.data || [];
 };
 
 export const fetchEvalRecordTrace = async (agentName: string, recordId: string): Promise<Record<string, unknown>[]> => {
-  const data = await request(`${agentPath(agentName)}/evals/records/${encodeURIComponent(recordId)}/trace`);
+  const data = await request(`${evalBase('agent', agentName)}/records/${encodeURIComponent(recordId)}/trace`);
   return data.data || [];
 };

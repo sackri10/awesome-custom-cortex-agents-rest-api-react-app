@@ -271,6 +271,47 @@ export const TEXT_CONSTANTS = {
     RERUN_HINT: 'Scores move between runs even when nothing changed. Run the same config about three times before trusting a number.',
     LOAD_ERROR_TITLE: 'Request failed',
     CLOSE: 'Close',
+
+    // Cortex Analyst (semantic view) evals
+    TAB_ANALYST: 'Analyst (semantic view)',
+    ANALYST_SUBTITLE: 'Test a semantic view against its own verified queries. Cortex Analyst answers each question, and a judge compares the SQL it generates with the verified one (sql_correctness).',
+    VIEW_LABEL: 'Semantic view',
+    VIEWS_LOADING: 'Loading semantic views…',
+    NO_VIEWS: 'No semantic views found in this database and schema.',
+    GENERATE_LABEL: 'Create the config file from this form',
+    GENERATE_HELP: 'Writes <stage>/<run name>.yaml with the WRITE_TO_STAGE helper procedure, then starts the run. Turn off to use a config file that already exists.',
+    STAGE_LABEL: 'Config stage',
+    STAGE_HELPER: 'A stage, not a file, e.g. @SALES_EVAL_DB.DATA.EVAL_CONFIGS',
+    STAGE_INVALID: 'Must start with @ and name a stage, with no .yaml file name.',
+    METRIC_VERSION_LABEL: 'sql_correctness version',
+    METRIC_VERSION_HELPER: 'Pick v3 unless you have a reason not to. v1 uses the legacy claude-4-sonnet judge (legacy since Aug 12, 2026). Scores are not comparable across versions.',
+    QUESTIONS_LABEL: 'Verified queries to evaluate (optional)',
+    QUESTIONS_HELPER: 'One question per line, exactly as written in the verified query. Leave empty to use all of them. Selected queries are removed from a temporary copy of the view during the run, so the model cannot look the answer up.',
+    ANALYST_RUNS_EMPTY: 'No runs tracked for this semantic view yet. Start one above.',
+    SQL_CORRECTNESS: 'SQL correctness',
+    SQL_CORRECTNESS_CAPTION: 'average of per-query scores',
+    QUERIES_EVALUATED: 'Queries evaluated',
+    BELOW_THRESHOLD: (threshold: number) => `Below ${threshold}`,
+    AVG_LATENCY: 'Avg response time',
+    DETAILS: 'Details',
+    DETAILS_TITLE: 'Evaluation detail',
+    EXPECTED_SQL: 'Expected',
+    GENERATED: 'Response',
+
+    // Run control
+    CANCEL_RUN: 'Cancel run',
+    CANCEL_CONFIRM: 'Cancel this run? Results gathered so far stay in Snowflake.',
+    STATUS_ERRORS_TITLE: 'Snowflake reported errors for this run',
+    POLL_NOTE: 'Runs that are in progress are checked every 30 seconds.',
+
+    // Run comparison
+    COMPARE_LABEL: 'Compare with',
+    COMPARE_NONE: 'No comparison',
+    COMPARE_TITLE: 'Comparison',
+    COMPARE_NO_MATCH: 'No questions in common with the baseline run, so there is nothing to compare.',
+    COMPARE_NO_CHANGES: (threshold: number) => `No question crossed the ${threshold} line between these runs.`,
+    REGRESSIONS: (n: number) => `${n} regression${n === 1 ? '' : 's'}: passed in the baseline, fails now`,
+    IMPROVEMENTS: (n: number) => `${n} improvement${n === 1 ? '' : 's'}: failed in the baseline, passes now`,
   },
 
   // Message Labels
