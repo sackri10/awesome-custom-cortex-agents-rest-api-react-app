@@ -8,10 +8,15 @@
 
 import { config } from '../config/env';
 import { ERROR_TEXT } from '../constants/textConstants';
+import { apiHeaders } from './runAsApi';
 
 export interface SnowflakeContext {
-  database: string;
-  schema: string;
+  /** The database and schema in effect for this request (chosen in the UI, else the .env default) */
+  database: string | null;
+  schema: string | null;
+  /** SNOWFLAKE_DATABASE / SNOWFLAKE_SCHEMA from the backend .env, if any */
+  defaultDatabase?: string | null;
+  defaultSchema?: string | null;
   warehouse: string | null;
   warehouseConfigured: boolean;
   /** Default stage for generated eval configs, e.g. @MY_DB.MY_SCHEMA.EVAL_CONFIGS */
@@ -70,7 +75,7 @@ const handleResponse = async (response: Response): Promise<any> => {
 const getJson = async (path: string): Promise<any> => {
   const response = await fetch(`${config.backendUrl}${path}`, {
     method: 'GET',
-    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', ...apiHeaders() },
   });
   return handleResponse(response);
 };
@@ -78,7 +83,7 @@ const getJson = async (path: string): Promise<any> => {
 const postJson = async (path: string, body: unknown): Promise<any> => {
   const response = await fetch(`${config.backendUrl}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', ...apiHeaders() },
     body: JSON.stringify(body),
   });
   return handleResponse(response);

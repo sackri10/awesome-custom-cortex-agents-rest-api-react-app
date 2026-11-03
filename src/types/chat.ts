@@ -55,6 +55,10 @@ export interface ChatMessage {
   requestId?: string;   // X-Snowflake-Request-ID of the :run call
   runId?: string;       // run_id from the SSE metadata event, when present
   threadId?: number;
+  // Set when the answer was produced under "Run as role" (testing a role's access)
+  runAsRole?: string;
+  // Tools Snowflake dropped because the role has no access to their data
+  toolWarnings?: Array<{ tool?: string; message: string }>;
 }
 
 export interface AccordionState {

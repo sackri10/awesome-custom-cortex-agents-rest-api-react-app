@@ -7,8 +7,9 @@ import { useState, useCallback, useRef } from 'react';
 import { ChatMessage } from '../types/chat';
 import { ChartContent } from '../types/chart';
 import { config } from '../config/env';
-import { extractSqlQuery, extractVerificationInfo } from '../utils/chatUtils';
+import { extractSqlQuery, extractVerificationInfo, extractToolWarnings } from '../utils/chatUtils';
 import { createCortexThread } from '../services/snowflakeAgentsApi';
+import { apiHeaders, getRunAsRole } from '../services/runAsApi';
 import { ERROR_TEXT, API_DEFAULTS, getApiStatusMessage } from '../constants/textConstants';
 
 const MAX_MESSAGES = 100;
@@ -47,7 +48,8 @@ export const useChatMessages = (selectedAgent: string) => {
       thinkingSteps: [],
       sqlQueries: [],
       timeline: [],
-      toolsUsed: []
+      toolsUsed: [],
+      runAsRole: getRunAsRole() || undefined
     };
 
     setMessages(prev => {
@@ -107,7 +109,8 @@ export const useChatMessages = (selectedAgent: string) => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'text/event-stream'
+          'Accept': 'text/event-stream',
+          ...apiHeaders()
         },
         body: JSON.stringify(requestBody),
         signal: abortController.signal
@@ -179,6 +182,16 @@ export const useChatMessages = (selectedAgent: string) => {
                   const runId = String(data.metadata.run_id);
                   setMessages(prev => prev.map(msg =>
                     msg.id === assistantMessageId ? { ...msg, runId } : msg
+                  ));
+                }
+              } else if (currentEvent === 'warning' || currentEvent.startsWith('response.warning')) {
+                // e.g. TOOL_NOT_ACCESSIBLE for a tool the role can't reach
+                const warnings = extractToolWarnings(data);
+                if (warnings.length > 0) {
+                  setMessages(prev => prev.map(msg =>
+                    msg.id === assistantMessageId
+                      ? { ...msg, toolWarnings: [...(msg.toolWarnings || []), ...warnings] }
+                      : msg
                   ));
                 }
               } else if (currentEvent === 'response.text.delta' && data.text) {

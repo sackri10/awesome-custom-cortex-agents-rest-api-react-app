@@ -31,6 +31,8 @@ import { FeedbackPanel } from './evals/FeedbackPanel';
 import { EvalRunsPanel } from './evals/EvalRunsPanel';
 import { AnalystEvalsPanel } from './evals/AnalystEvalsPanel';
 import { ErrorAlert } from './evals/shared';
+import { getScope } from '../services/requestScope';
+import { SCOPE_TEXT } from '../constants/textConstants';
 
 interface EvalsPageProps {
   onBack: () => void;
@@ -71,6 +73,11 @@ const EvalsPage: React.FC<EvalsPageProps> = ({ onBack }) => {
               </Typography>
               <Typography variant="body1" color="text.secondary">
                 {EVALS_TEXT.PAGE_SUBTITLE}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                {getScope()
+                  ? `${SCOPE_TEXT.DATABASE} / ${SCOPE_TEXT.SCHEMA}: ${SCOPE_TEXT.CURRENT(getScope()!.database, getScope()!.schema)} (change it on the chat screen)`
+                  : `${SCOPE_TEXT.DATABASE} / ${SCOPE_TEXT.SCHEMA}: ${SCOPE_TEXT.DEFAULT_NOTE.toLowerCase()} (choose one on the chat screen)`}
               </Typography>
             </Box>
             {/* Analyst evals target a semantic view and have their own picker */}

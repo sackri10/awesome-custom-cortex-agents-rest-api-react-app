@@ -33,6 +33,8 @@ const ERROR_MESSAGES = {
     EVAL_RUN_NOT_FOUND: '💡 Tip: Check the run name. Results only exist for runs that were actually started against this agent.',
     EVAL_WRITE_PROC: '💡 Tip: Writing a generated config uses the WRITE_TO_STAGE helper procedure from the eval setup script. Create it, point EVAL_WRITE_TO_STAGE_PROC at your own procedure, or upload the YAML to the stage yourself and use an existing config path instead.',
     EVAL_FULLY_QUALIFIED: '💡 Tip: Snowflake wants fully qualified names in the config (DATABASE.SCHEMA.OBJECT). Rewrite the config file and start the run again with a new run name.',
+    SCOPE_REQUIRED: '💡 Tip: Pick a database and schema in the bar at the top of the page. You can also set defaults with SNOWFLAKE_DATABASE and SNOWFLAKE_SCHEMA in the backend .env file.',
+    RUN_AS_NOT_ENABLED: '💡 Tip: List the roles you want to allow in RUN_AS_ROLES in the backend .env (for example LOAN_ANALYST_ROLE,MARKETING_ANALYST_ROLE) and restart the server.',
     EVAL_RUN_EXISTS: (runName) => `💡 Tip: A run named "${runName}" is already tracked. Every eval run needs a unique name.`
   }
 };

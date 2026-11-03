@@ -140,3 +140,27 @@ export const formatTime = (date: Date): string => {
 };
 
 
+
+
+/**
+ * Tool warnings from a stream event. With `tool_not_accessible: accept`, Snowflake drops each
+ * tool the caller's role can't reach and reports TOOL_NOT_ACCESSIBLE: <ToolName> (...). The
+ * payload shape isn't documented, so accept a single warning, a list, or plain strings.
+ */
+export const extractToolWarnings = (data: any): Array<{ tool?: string; message: string }> => {
+  const candidates: any[] = Array.isArray(data?.warnings)
+    ? data.warnings
+    : Array.isArray(data)
+      ? data
+      : data?.warning
+        ? [data.warning]
+        : [data];
+  const out: Array<{ tool?: string; message: string }> = [];
+  candidates.forEach(item => {
+    const message = typeof item === 'string' ? item : (typeof item?.message === 'string' ? item.message : '');
+    if (!message) return;
+    const match = message.match(/TOOL_NOT_ACCESSIBLE:\s*([^\s(]+)/);
+    out.push({ tool: match ? match[1] : undefined, message });
+  });
+  return out;
+};

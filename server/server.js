@@ -32,6 +32,7 @@ const {
   SnowflakeSqlError,
 } = require('./evalsClient');
 const evalRuns = require('./evalRunRegistry');
+const { createRunAs } = require('./runAs');
 
 const app = express();
 // Render uses PORT, local dev uses SERVER_PORT
@@ -47,9 +48,7 @@ const PORT = process.env.PORT || process.env.SERVER_PORT || CONFIG.DEFAULT_PORT;
 const validateEnvironment = () => {
   const required = [
     'SNOWFLAKE_HOST',
-    'SNOWFLAKE_PAT',
-    'SNOWFLAKE_DATABASE',
-    'SNOWFLAKE_SCHEMA'
+    'SNOWFLAKE_PAT'
   ];
 
   const missing = required.filter(key => !process.env[key]);
@@ -68,8 +67,10 @@ validateEnvironment();
 const SNOWFLAKE_CONFIG = {
   host: process.env.SNOWFLAKE_HOST,
   pat: process.env.SNOWFLAKE_PAT,
-  database: process.env.SNOWFLAKE_DATABASE,
-  schema: process.env.SNOWFLAKE_SCHEMA,
+  // Optional defaults. The UI picks the database and schema per request (see withScope);
+  // these are only used when the browser sends none.
+  database: process.env.SNOWFLAKE_DATABASE || null,
+  schema: process.env.SNOWFLAKE_SCHEMA || null,
   // Optional: only required for CREATE operations (search services / semantic views).
   // Listing and metadata (SHOW commands) run without a warehouse.
   warehouse: process.env.SNOWFLAKE_WAREHOUSE || null,
@@ -81,8 +82,20 @@ const SNOWFLAKE_CONFIG = {
 };
 
 // Default stage offered in the UI when generating eval configs
-const EVAL_CONFIG_STAGE =
-  process.env.EVAL_CONFIG_STAGE || `@${SNOWFLAKE_CONFIG.database}.${SNOWFLAKE_CONFIG.schema}.EVAL_CONFIGS`;
+const evalConfigStageFor = (scope) =>
+  process.env.EVAL_CONFIG_STAGE || (scope && scope.database && scope.schema ? `@${scope.database}.${scope.schema}.EVAL_CONFIGS` : null);
+
+// "Run as role": roles the browser may choose to call the agent as (opt-in allowlist)
+let runAs;
+try {
+  runAs = createRunAs({
+    host: SNOWFLAKE_CONFIG.host,
+    pat: SNOWFLAKE_CONFIG.pat,
+  });
+} catch (error) {
+  console.error(`❌ ${error.message}`);
+  process.exit(1);
+}
 
 if (!SNOWFLAKE_CONFIG.warehouse) {
   console.warn('⚠️  SNOWFLAKE_WAREHOUSE is not set. Listing/metadata will work, but creating Cortex Search services and semantic views requires it.');
@@ -96,7 +109,8 @@ if (!SNOWFLAKE_CONFIG.mcpServer) {
  * Lazy MCP client — only constructed when SNOWFLAKE_MCP_SERVER is configured.
  */
 const getMcpClient = () => {
-  if (!SNOWFLAKE_CONFIG.mcpServer) {
+  // MCP is bound to the .env defaults: it needs a fixed database and schema
+  if (!SNOWFLAKE_CONFIG.mcpServer || !SNOWFLAKE_CONFIG.database || !SNOWFLAKE_CONFIG.schema) {
     return null;
   }
   return createSnowflakeMcpClient({
@@ -173,7 +187,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Accept', 'X-Run-As-Role', 'X-Snowflake-Database', 'X-Snowflake-Schema'],
   // Lets the browser read the :run request id, which feedback uses as orig_request_id
   exposedHeaders: ['X-Snowflake-Request-ID']
 };
@@ -196,6 +210,44 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 
 /**
+ * Request scope: which database and schema this request works in. The browser sends them in
+ * X-Snowflake-Database / X-Snowflake-Schema (picked in the UI). SNOWFLAKE_DATABASE and
+ * SNOWFLAKE_SCHEMA are only the fallback. Values are validated as plain identifiers, and what
+ * the caller can actually see is still decided by Snowflake's grants for the active role.
+ * Sets req.sf = { database, schema } (either may be null).
+ */
+const SCOPE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+const withScope = (req, res, next) => {
+  const pick = (header, fallback) => {
+    const value = req.get(header);
+    if (value === undefined || value === '') return fallback;
+    return SCOPE_IDENTIFIER.test(value) ? value : false;
+  };
+  const database = pick('X-Snowflake-Database', SNOWFLAKE_CONFIG.database);
+  const schema = pick('X-Snowflake-Schema', SNOWFLAKE_CONFIG.schema);
+  if (database === false || schema === false) {
+    return res.status(HTTP_STATUS.BAD_REQUEST).json({
+      errorParts: [ERROR_MESSAGES.ERROR_PREFIX, 'Invalid database or schema name.'],
+    });
+  }
+  req.sf = { database, schema };
+  next();
+};
+app.use('/api/', withScope);
+
+/** Routes that need both: answers 400 with a hint when none is chosen yet. */
+const requireScope = (req, res) => {
+  const scope = req.sf;
+  if (scope && scope.database && scope.schema) return scope;
+  res.status(HTTP_STATUS.BAD_REQUEST).json({
+    errorParts: [ERROR_MESSAGES.ERROR_PREFIX, 'No database and schema selected.', ERROR_MESSAGES.TIPS.SCOPE_REQUIRED],
+  });
+  return null;
+};
+
+const scopeKey = (scope) => `${scope.database}.${scope.schema}`;
+
+/**
  * Request logging middleware
  */
 app.use((req, res, next) => {
@@ -211,7 +263,7 @@ app.use((req, res, next) => {
 /**
  * Get authentication headers for Snowflake API
  */
-const getSnowflakeAuthHeaders = () => ({
+const getSnowflakeAuthHeaders = (req) => (req && req.runAs ? runAs.headersFor(req.runAs) : {
   'X-Snowflake-Authorization-Token-Type': 'PROGRAMMATIC_ACCESS_TOKEN',
   'Authorization': `Bearer ${SNOWFLAKE_CONFIG.pat}`,
   'Content-Type': 'application/json',
@@ -219,26 +271,49 @@ const getSnowflakeAuthHeaders = () => ({
 });
 
 /**
+ * Route middleware: honor the X-Run-As-Role header. The role must be in RUN_AS_ROLES, so a
+ * browser can never make the proxy act as a role the operator didn't name.
+ * Sets req.runAs = { role, pat } for getSnowflakeAuthHeaders(req).
+ */
+const withRunAs = (req, res, next) => {
+  const requested = req.get('X-Run-As-Role');
+  if (!requested) return next();
+  if (!runAs.enabled) {
+    return res.status(HTTP_STATUS.BAD_REQUEST).json({
+      errorParts: [ERROR_MESSAGES.ERROR_PREFIX, 'Run as role is not enabled.', ERROR_MESSAGES.TIPS.RUN_AS_NOT_ENABLED],
+    });
+  }
+  const resolved = runAs.resolve(requested);
+  if (!resolved) {
+    return res.status(403).json({
+      errorParts: [ERROR_MESSAGES.ERROR_PREFIX, `Role "${String(requested).slice(0, 80)}" is not in RUN_AS_ROLES.`, ERROR_MESSAGES.TIPS.RUN_AS_NOT_ENABLED],
+    });
+  }
+  req.runAs = resolved;
+  next();
+};
+
+/**
  * Execute a SQL statement via the Snowflake SQL API.
  * Used for SHOW (listing/metadata) and CREATE (search services / semantic views).
  * Returns { ok, status, json }.
  */
-const executeSql = async (statement, { includeWarehouse = false } = {}) => {
+const executeSql = async (statement, { includeWarehouse = false, req } = {}) => {
   const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/statements`;
+  const scope = (req && req.sf) || { database: SNOWFLAKE_CONFIG.database, schema: SNOWFLAKE_CONFIG.schema };
 
-  const body = {
-    statement,
-    timeout: 60,
-    database: SNOWFLAKE_CONFIG.database,
-    schema: SNOWFLAKE_CONFIG.schema,
-  };
+  const body = { statement, timeout: 60 };
+  if (scope.database) body.database = scope.database;
+  if (scope.schema) body.schema = scope.schema;
   if (includeWarehouse && SNOWFLAKE_CONFIG.warehouse) {
     body.warehouse = SNOWFLAKE_CONFIG.warehouse;
   }
+  // Run as the chosen role (the SQL API takes the role in the body)
+  if (req && req.runAs) body.role = req.runAs.role;
 
   const response = await fetch(endpoint, {
     method: 'POST',
-    headers: getSnowflakeAuthHeaders(),
+    headers: getSnowflakeAuthHeaders(req),
     body: JSON.stringify(body),
   });
 
@@ -360,15 +435,17 @@ app.get('/health', (req, res) => {
  * List all Cortex Agents
  * GET /api/agents
  */
-app.get('/api/agents', async (req, res) => {
+app.get('/api/agents', withRunAs, async (req, res) => {
   try {
-    const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents`;
+    const scope = requireScope(req, res);
+    if (!scope) return;
+    const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${scope.database}/schemas/${scope.schema}/agents`;
     
     console.log('📡 Fetching agents list from Snowflake...');
     
     const response = await fetch(endpoint, {
       method: 'GET',
-      headers: getSnowflakeAuthHeaders(),
+      headers: getSnowflakeAuthHeaders(req),
     });
 
     if (!response.ok) {
@@ -441,6 +518,8 @@ app.get('/api/agents', async (req, res) => {
  */
 app.post('/api/agents', async (req, res) => {
   try {
+    const scope = requireScope(req, res);
+    if (!scope) return;
     const body = req.body || {};
 
     // Pull out create mode (defaults to errorIfExists) and keep it out of the payload
@@ -455,7 +534,7 @@ app.post('/api/agents', async (req, res) => {
       });
     }
 
-    const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents?createMode=${createMode}`;
+    const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${scope.database}/schemas/${scope.schema}/agents?createMode=${createMode}`;
 
     console.log(`🛠️  Creating agent: ${agentPayload.name} (createMode=${createMode})`);
 
@@ -535,6 +614,8 @@ app.post('/api/agents', async (req, res) => {
  */
 app.put('/api/agents/:agentName', async (req, res) => {
   try {
+    const scope = requireScope(req, res);
+    if (!scope) return;
     const { agentName } = req.params;
 
     if (!validateAgentName(agentName)) {
@@ -544,7 +625,7 @@ app.put('/api/agents/:agentName', async (req, res) => {
     const agentPayload = { ...(req.body || {}) };
     delete agentPayload._createMode; // not applicable to updates
 
-    const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${agentName}`;
+    const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${scope.database}/schemas/${scope.schema}/agents/${agentName}`;
 
     console.log(`✏️  Updating agent: ${agentName}`);
 
@@ -604,12 +685,12 @@ app.put('/api/agents/:agentName', async (req, res) => {
  * POST /api/threads   body: { origin_application? }
  * → Snowflake POST /api/v2/cortex/threads
  */
-app.post('/api/threads', async (req, res) => {
+app.post('/api/threads', withRunAs, async (req, res) => {
   try {
     const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/cortex/threads`;
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: getSnowflakeAuthHeaders(),
+      headers: getSnowflakeAuthHeaders(req),
       body: JSON.stringify({ origin_application: (req.body && req.body.origin_application) || 'dash-desai' }),
     });
 
@@ -643,7 +724,7 @@ app.post('/api/threads', async (req, res) => {
  * GET /api/threads/:threadId
  * → Snowflake GET /api/v2/cortex/threads/{threadId}
  */
-app.get('/api/threads/:threadId', async (req, res) => {
+app.get('/api/threads/:threadId', withRunAs, async (req, res) => {
   try {
     const { threadId } = req.params;
     if (!/^\d+$/.test(threadId)) {
@@ -651,7 +732,7 @@ app.get('/api/threads/:threadId', async (req, res) => {
     }
 
     const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/cortex/threads/${threadId}`;
-    const response = await fetch(endpoint, { method: 'GET', headers: getSnowflakeAuthHeaders() });
+    const response = await fetch(endpoint, { method: 'GET', headers: getSnowflakeAuthHeaders(req) });
 
     if (!response.ok) {
       const errorParts = [
@@ -677,12 +758,14 @@ app.get('/api/threads/:threadId', async (req, res) => {
  */
 app.get('/api/context', (req, res) => {
   res.json({
-    database: SNOWFLAKE_CONFIG.database,
-    schema: SNOWFLAKE_CONFIG.schema,
+    database: req.sf.database,
+    schema: req.sf.schema,
+    defaultDatabase: SNOWFLAKE_CONFIG.database,
+    defaultSchema: SNOWFLAKE_CONFIG.schema,
     warehouse: SNOWFLAKE_CONFIG.warehouse,
     warehouseConfigured: !!SNOWFLAKE_CONFIG.warehouse,
     evalRole: SNOWFLAKE_CONFIG.evalRole,
-    evalConfigStage: EVAL_CONFIG_STAGE,
+    evalConfigStage: evalConfigStageFor(req.sf),
   });
 });
 
@@ -692,7 +775,13 @@ app.get('/api/context', (req, res) => {
  */
 const resolveIdentParam = (value, fallback, label, res) => {
   const candidate = (value && String(value).trim()) || fallback;
-  if (!/^[A-Za-z_][A-Za-z0-9_$]*$/.test(candidate)) {
+  if (!candidate && (label === 'database' || label === 'schema')) {
+    res.status(HTTP_STATUS.BAD_REQUEST).json({
+      errorParts: [ERROR_MESSAGES.ERROR_PREFIX, `No ${label} selected.`, ERROR_MESSAGES.TIPS.SCOPE_REQUIRED],
+    });
+    return null;
+  }
+  if (!candidate || !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(candidate)) {
     res.status(HTTP_STATUS.BAD_REQUEST).json({ error: `Invalid ${label}` });
     return null;
   }
@@ -703,15 +792,15 @@ const resolveIdentParam = (value, fallback, label, res) => {
  * List semantic views in a schema (defaults to the configured database/schema).
  * GET /api/semantic-views
  */
-app.get('/api/semantic-views', async (req, res) => {
+app.get('/api/semantic-views', withRunAs, async (req, res) => {
   try {
-    const database = resolveIdentParam(req.query.database, SNOWFLAKE_CONFIG.database, 'database', res);
+    const database = resolveIdentParam(req.query.database, req.sf.database, 'database', res);
     if (!database) return;
-    const schema = resolveIdentParam(req.query.schema, SNOWFLAKE_CONFIG.schema, 'schema', res);
+    const schema = resolveIdentParam(req.query.schema, req.sf.schema, 'schema', res);
     if (!schema) return;
 
     console.log(`📡 Listing semantic views in ${database}.${schema}...`);
-    const result = await executeSql(`SHOW SEMANTIC VIEWS IN SCHEMA ${database}.${schema}`);
+    const result = await executeSql(`SHOW SEMANTIC VIEWS IN SCHEMA ${database}.${schema}`, { req });
 
     if (!result.ok) {
       return res.status(result.status).json({ errorParts: sqlErrorParts(result, ERROR_MESSAGES.TIPS.BAD_REQUEST) });
@@ -736,15 +825,15 @@ app.get('/api/semantic-views', async (req, res) => {
  * List Cortex Search services in a schema (defaults to the configured database/schema).
  * GET /api/cortex-search-services
  */
-app.get('/api/cortex-search-services', async (req, res) => {
+app.get('/api/cortex-search-services', withRunAs, async (req, res) => {
   try {
-    const database = resolveIdentParam(req.query.database, SNOWFLAKE_CONFIG.database, 'database', res);
+    const database = resolveIdentParam(req.query.database, req.sf.database, 'database', res);
     if (!database) return;
-    const schema = resolveIdentParam(req.query.schema, SNOWFLAKE_CONFIG.schema, 'schema', res);
+    const schema = resolveIdentParam(req.query.schema, req.sf.schema, 'schema', res);
     if (!schema) return;
 
     console.log(`📡 Listing Cortex Search services in ${database}.${schema}...`);
-    const result = await executeSql(`SHOW CORTEX SEARCH SERVICES IN SCHEMA ${database}.${schema}`);
+    const result = await executeSql(`SHOW CORTEX SEARCH SERVICES IN SCHEMA ${database}.${schema}`, { req });
 
     if (!result.ok) {
       return res.status(result.status).json({ errorParts: sqlErrorParts(result, ERROR_MESSAGES.TIPS.BAD_REQUEST) });
@@ -769,14 +858,14 @@ app.get('/api/cortex-search-services', async (req, res) => {
  * List tables & views in a schema (source objects for the builders).
  * GET /api/metadata/tables?database=&schema=
  */
-app.get('/api/metadata/tables', async (req, res) => {
+app.get('/api/metadata/tables', withRunAs, async (req, res) => {
   try {
-    const database = resolveIdentParam(req.query.database, SNOWFLAKE_CONFIG.database, 'database', res);
+    const database = resolveIdentParam(req.query.database, req.sf.database, 'database', res);
     if (!database) return;
-    const schema = resolveIdentParam(req.query.schema, SNOWFLAKE_CONFIG.schema, 'schema', res);
+    const schema = resolveIdentParam(req.query.schema, req.sf.schema, 'schema', res);
     if (!schema) return;
 
-    const result = await executeSql(`SHOW OBJECTS IN SCHEMA ${database}.${schema}`);
+    const result = await executeSql(`SHOW OBJECTS IN SCHEMA ${database}.${schema}`, { req });
     if (!result.ok) {
       return res.status(result.status).json({ errorParts: sqlErrorParts(result, ERROR_MESSAGES.TIPS.BAD_REQUEST) });
     }
@@ -801,16 +890,16 @@ app.get('/api/metadata/tables', async (req, res) => {
  * List columns for a table/view.
  * GET /api/metadata/columns?database=&schema=&table=
  */
-app.get('/api/metadata/columns', async (req, res) => {
+app.get('/api/metadata/columns', withRunAs, async (req, res) => {
   try {
-    const database = resolveIdentParam(req.query.database, SNOWFLAKE_CONFIG.database, 'database', res);
+    const database = resolveIdentParam(req.query.database, req.sf.database, 'database', res);
     if (!database) return;
-    const schema = resolveIdentParam(req.query.schema, SNOWFLAKE_CONFIG.schema, 'schema', res);
+    const schema = resolveIdentParam(req.query.schema, req.sf.schema, 'schema', res);
     if (!schema) return;
     const table = resolveIdentParam(req.query.table, '', 'table', res);
     if (!table) return;
 
-    const result = await executeSql(`SHOW COLUMNS IN TABLE ${database}.${schema}.${table}`);
+    const result = await executeSql(`SHOW COLUMNS IN TABLE ${database}.${schema}.${table}`, { req });
     if (!result.ok) {
       return res.status(result.status).json({ errorParts: sqlErrorParts(result, ERROR_MESSAGES.TIPS.NOT_FOUND) });
     }
@@ -834,9 +923,9 @@ app.get('/api/metadata/columns', async (req, res) => {
  * List databases (for the object-picker selectors).
  * GET /api/metadata/databases
  */
-app.get('/api/metadata/databases', async (req, res) => {
+app.get('/api/metadata/databases', withRunAs, async (req, res) => {
   try {
-    const result = await executeSql('SHOW DATABASES');
+    const result = await executeSql('SHOW DATABASES', { req });
     if (!result.ok) {
       return res.status(result.status).json({ errorParts: sqlErrorParts(result) });
     }
@@ -852,12 +941,12 @@ app.get('/api/metadata/databases', async (req, res) => {
  * List schemas in a database (for the object-picker selectors).
  * GET /api/metadata/schemas?database=
  */
-app.get('/api/metadata/schemas', async (req, res) => {
+app.get('/api/metadata/schemas', withRunAs, async (req, res) => {
   try {
-    const database = resolveIdentParam(req.query.database, SNOWFLAKE_CONFIG.database, 'database', res);
+    const database = resolveIdentParam(req.query.database, req.sf.database, 'database', res);
     if (!database) return;
 
-    const result = await executeSql(`SHOW SCHEMAS IN DATABASE ${database}`);
+    const result = await executeSql(`SHOW SCHEMAS IN DATABASE ${database}`, { req });
     if (!result.ok) {
       return res.status(result.status).json({ errorParts: sqlErrorParts(result) });
     }
@@ -877,13 +966,15 @@ app.get('/api/metadata/schemas', async (req, res) => {
  */
 app.post('/api/cortex-search-services', async (req, res) => {
   try {
+    const scope = requireScope(req, res);
+    if (!scope) return;
     if (!requireWarehouse(res)) return;
 
     let sql;
     try {
       sql = buildCreateSearchServiceSql(req.body || {}, {
-        database: SNOWFLAKE_CONFIG.database,
-        schema: SNOWFLAKE_CONFIG.schema,
+        database: scope.database,
+        schema: scope.schema,
         warehouse: SNOWFLAKE_CONFIG.warehouse,
       });
     } catch (buildError) {
@@ -893,7 +984,7 @@ app.post('/api/cortex-search-services', async (req, res) => {
     }
 
     console.log(`🛠️  Creating Cortex Search service:\n${sql}`);
-    const result = await executeSql(sql, { includeWarehouse: true });
+    const result = await executeSql(sql, { includeWarehouse: true, req });
 
     if (!result.ok) {
       return res.status(result.status).json({ errorParts: sqlErrorParts(result) });
@@ -918,12 +1009,14 @@ app.post('/api/cortex-search-services', async (req, res) => {
  */
 app.post('/api/semantic-views', async (req, res) => {
   try {
+    const scope = requireScope(req, res);
+    if (!scope) return;
     // Semantic view DDL is pure metadata, but we include the warehouse when set.
     let sql;
     try {
       sql = buildCreateSemanticViewSql(req.body || {}, {
-        database: SNOWFLAKE_CONFIG.database,
-        schema: SNOWFLAKE_CONFIG.schema,
+        database: scope.database,
+        schema: scope.schema,
       });
     } catch (buildError) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({
@@ -932,7 +1025,7 @@ app.post('/api/semantic-views', async (req, res) => {
     }
 
     console.log(`🛠️  Creating semantic view:\n${sql}`);
-    const result = await executeSql(sql, { includeWarehouse: true });
+    const result = await executeSql(sql, { includeWarehouse: true, req });
 
     if (!result.ok) {
       return res.status(result.status).json({ errorParts: sqlErrorParts(result) });
@@ -955,8 +1048,10 @@ app.post('/api/semantic-views', async (req, res) => {
  * Get details for a specific Cortex Agent
  * GET /api/agents/:agentName
  */
-app.get('/api/agents/:agentName', async (req, res) => {
+app.get('/api/agents/:agentName', withRunAs, async (req, res) => {
   try {
+    const scope = requireScope(req, res);
+    if (!scope) return;
     const { agentName } = req.params;
     
     // Validate agent name to prevent injection
@@ -966,13 +1061,13 @@ app.get('/api/agents/:agentName', async (req, res) => {
       });
     }
     
-    const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${agentName}`;
+    const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${scope.database}/schemas/${scope.schema}/agents/${agentName}`;
     
     console.log(`📡 Fetching details for agent: ${agentName}...`);
     
     const response = await fetch(endpoint, {
       method: 'GET',
-      headers: getSnowflakeAuthHeaders(),
+      headers: getSnowflakeAuthHeaders(req),
     });
 
     if (!response.ok) {
@@ -1039,8 +1134,10 @@ app.get('/api/agents/:agentName', async (req, res) => {
  * Send message to Cortex Agent (streaming endpoint)
  * POST /api/agents/:agentName/messages
  */
-app.post('/api/agents/:agentName/messages', async (req, res) => {
+app.post('/api/agents/:agentName/messages', withRunAs, async (req, res) => {
   try {
+    const scope = requireScope(req, res);
+    if (!scope) return;
     const { agentName } = req.params;
     const requestBody = req.body;
     
@@ -1058,12 +1155,12 @@ app.post('/api/agents/:agentName/messages', async (req, res) => {
     
     // Build Snowflake agent messaging endpoint dynamically
     // Format: https://{host}/api/v2/databases/{db}/schemas/{schema}/agents/{agent}:run
-    const agentEndpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${agentName}:run`;
+    const agentEndpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${scope.database}/schemas/${scope.schema}/agents/${agentName}:run`;
     
     // Make request to Snowflake Agent endpoint
     const response = await fetch(agentEndpoint, {
       method: 'POST',
-      headers: getSnowflakeAuthHeaders(),
+      headers: getSnowflakeAuthHeaders(req),
       body: JSON.stringify(requestBody),
     });
 
@@ -1199,16 +1296,16 @@ const RECORD_ID_PATTERN = /^[A-Za-z0-9_\-:.]{1,256}$/;
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$/;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_\-]{1,128}$/;
 
-const getObservability = () => createObservability(
+const getObservability = (req) => createObservability(
   createSqlClient({
     host: SNOWFLAKE_CONFIG.host,
     pat: SNOWFLAKE_CONFIG.pat,
-    database: SNOWFLAKE_CONFIG.database,
-    schema: SNOWFLAKE_CONFIG.schema,
+    database: req.sf.database,
+    schema: req.sf.schema,
     warehouse: SNOWFLAKE_CONFIG.warehouse,
     role: SNOWFLAKE_CONFIG.evalRole,
   }),
-  { database: SNOWFLAKE_CONFIG.database, schema: SNOWFLAKE_CONFIG.schema }
+  { database: req.sf.database, schema: req.sf.schema }
 );
 
 const badRequest = (res, message) =>
@@ -1248,6 +1345,7 @@ const evalsErrorResponse = (res, error, label) => {
  * (the observability table functions and EXECUTE_AI_EVALUATION need one).
  */
 const evalsGuard = (req, res) => {
+  if (!requireScope(req, res)) return false;
   if (!validateAgentName(req.params.agentName)) {
     res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
     return false;
@@ -1267,8 +1365,10 @@ const evalsGuard = (req, res) => {
  * Body: { positive: boolean, feedback_message?, categories?: string[], orig_request_id?, thread_id? }
  * → Snowflake POST /api/v2/databases/{db}/schemas/{schema}/agents/{name}:feedback
  */
-app.post('/api/agents/:agentName/feedback', async (req, res) => {
+app.post('/api/agents/:agentName/feedback', withRunAs, async (req, res) => {
   try {
+    const scope = requireScope(req, res);
+    if (!scope) return;
     const { agentName } = req.params;
     if (!validateAgentName(agentName)) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
@@ -1304,12 +1404,12 @@ app.post('/api/agents/:agentName/feedback', async (req, res) => {
       payload.thread_id = body.thread_id;
     }
 
-    const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${SNOWFLAKE_CONFIG.database}/schemas/${SNOWFLAKE_CONFIG.schema}/agents/${agentName}:feedback`;
+    const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${scope.database}/schemas/${scope.schema}/agents/${agentName}:feedback`;
     console.log(`👍 Submitting ${payload.positive ? 'positive' : 'negative'} feedback for agent: ${agentName}`);
 
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: getSnowflakeAuthHeaders(),
+      headers: getSnowflakeAuthHeaders(req),
       body: JSON.stringify(payload),
     });
 
@@ -1346,7 +1446,7 @@ app.get('/api/agents/:agentName/feedback', async (req, res) => {
     }
 
     console.log(`📡 Reading feedback for agent: ${req.params.agentName}`);
-    const rows = await getObservability().feedback(req.params.agentName, {
+    const rows = await getObservability(req).feedback(req.params.agentName, {
       since: since ? String(since).replace('T', ' ') : undefined,
       until: until ? String(until).replace('T', ' ') : undefined,
     });
@@ -1361,9 +1461,8 @@ const STAGE_PATTERN = /^@[A-Za-z0-9_$."\-\/]{1,300}$/;
 const WRITE_PROC_PATTERN = /^[A-Za-z0-9_$.]+$/;
 
 // Helper procedure from the setup script: CALL <proc>('@stage/file.yaml', '<yaml>')
-const EVAL_WRITE_TO_STAGE_PROC =
-  process.env.EVAL_WRITE_TO_STAGE_PROC || `${SNOWFLAKE_CONFIG.database}.${SNOWFLAKE_CONFIG.schema}.WRITE_TO_STAGE`;
-if (!WRITE_PROC_PATTERN.test(EVAL_WRITE_TO_STAGE_PROC)) {
+const writeProcFor = (scope) => process.env.EVAL_WRITE_TO_STAGE_PROC || `${scope.database}.${scope.schema}.WRITE_TO_STAGE`;
+if (process.env.EVAL_WRITE_TO_STAGE_PROC && !WRITE_PROC_PATTERN.test(process.env.EVAL_WRITE_TO_STAGE_PROC)) {
   console.error('❌ EVAL_WRITE_TO_STAGE_PROC must be an identifier like DB.SCHEMA.PROC');
   process.exit(1);
 }
@@ -1383,6 +1482,7 @@ const registerEvalRoutes = (kind, base) => {
   // Validate the target and require a warehouse (the table functions and
   // EXECUTE_AI_EVALUATION need one).
   const guard = (req, res) => {
+    if (!requireScope(req, res)) return false;
     if (!validTarget(req.params.target)) {
       badRequest(res, isAgent ? ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME : 'Invalid semantic view name.');
       return false;
@@ -1396,8 +1496,9 @@ const registerEvalRoutes = (kind, base) => {
 
   /** GET {base}/runs — tracked runs from the local registry */
   app.get(`${base}/runs`, (req, res) => {
+    if (!requireScope(req, res)) return;
     if (!validTarget(req.params.target)) return badRequest(res, 'Invalid name.');
-    res.json({ data: evalRuns.listRuns(kind, req.params.target) });
+    res.json({ data: evalRuns.listRuns(kind, req.params.target, scopeKey(req.sf)) });
   });
 
   /**
@@ -1420,7 +1521,7 @@ const registerEvalRoutes = (kind, base) => {
       if (generate && (isAgent || !start)) {
         return badRequest(res, 'Config generation is only available when starting a semantic view run.');
       }
-      if (start && evalRuns.getRun(kind, target, runName)) {
+      if (start && evalRuns.getRun(kind, target, runName, scopeKey(req.sf))) {
         return res.status(HTTP_STATUS.CONFLICT).json({
           errorParts: [ERROR_MESSAGES.ERROR_PREFIX, ERROR_MESSAGES.TIPS.EVAL_RUN_EXISTS(runName)],
         });
@@ -1436,7 +1537,7 @@ const registerEvalRoutes = (kind, base) => {
         metricVersion = generate.metricVersion || 'v3';
         try {
           yamlText = buildAnalystEvalConfig({
-            semanticViewFqn: `${SNOWFLAKE_CONFIG.database}.${SNOWFLAKE_CONFIG.schema}.${target}`,
+            semanticViewFqn: `${req.sf.database}.${req.sf.schema}.${target}`,
             metricVersion,
             questions: Array.isArray(generate.questions) ? generate.questions : [],
           });
@@ -1450,10 +1551,10 @@ const registerEvalRoutes = (kind, base) => {
         return badRequest(res, 'Config path must be a staged YAML file, e.g. @MY_DB.MY_SCHEMA.EVAL_CONFIGS/eval_config.yaml');
       }
 
-      const obs = getObservability();
+      const obs = getObservability(req);
       if (yamlText) {
         console.log(`📝 Writing eval config to ${configPath}`);
-        await obs.writeConfig(EVAL_WRITE_TO_STAGE_PROC, configPath, yamlText);
+        await obs.writeConfig(writeProcFor(req.sf), configPath, yamlText);
       }
 
       let status = 'TRACKED';
@@ -1467,6 +1568,7 @@ const registerEvalRoutes = (kind, base) => {
       const run = evalRuns.upsertRun({
         kind,
         target,
+        scope: scopeKey(req.sf),
         runName,
         configPath,
         label: typeof label === 'string' ? label.slice(0, 200) : undefined,
@@ -1483,14 +1585,15 @@ const registerEvalRoutes = (kind, base) => {
 
   /** DELETE {base}/runs/:runName — stop tracking (nothing is deleted in Snowflake) */
   app.delete(`${base}/runs/:runName`, (req, res) => {
+    if (!requireScope(req, res)) return;
     const { target, runName } = req.params;
     if (!validTarget(target) || !RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid name or run name.');
-    res.json({ removed: evalRuns.removeRun(kind, target, runName) });
+    res.json({ removed: evalRuns.removeRun(kind, target, runName, scopeKey(req.sf)) });
   });
 
   /** Look up a run's config path: from the registry, or ?configPath= for an untracked run */
   const configPathFor = (req, res) => {
-    const run = evalRuns.getRun(kind, req.params.target, req.params.runName);
+    const run = evalRuns.getRun(kind, req.params.target, req.params.runName, scopeKey(req.sf));
     const configPath = (run && run.configPath) || req.query.configPath;
     if (!CONFIG_PATH_PATTERN.test(String(configPath || ''))) {
       badRequest(res, 'Unknown run: pass ?configPath=@DB.SCHEMA.STAGE/config.yaml or track the run first.');
@@ -1508,7 +1611,7 @@ const registerEvalRoutes = (kind, base) => {
       const found = configPathFor(req, res);
       if (!found) return;
 
-      const rows = await getObservability().evalAction('STATUS', runName, found.configPath);
+      const rows = await getObservability(req).evalAction('STATUS', runName, found.configPath);
       const status = summarizeStatus(rows);
       if (found.run) evalRuns.upsertRun({ ...found.run, kind, target, status, checkedAt: new Date().toISOString() });
       res.json({ status, statusDetails: statusDetails(rows), rows });
@@ -1526,7 +1629,7 @@ const registerEvalRoutes = (kind, base) => {
       const found = configPathFor(req, res);
       if (!found) return;
 
-      const result = await getObservability().evalAction('CANCEL', runName, found.configPath);
+      const result = await getObservability(req).evalAction('CANCEL', runName, found.configPath);
       if (found.run) evalRuns.upsertRun({ ...found.run, kind, target, status: 'CANCELLED', checkedAt: new Date().toISOString() });
       res.json({ result });
     } catch (error) {
@@ -1544,7 +1647,7 @@ const registerEvalRoutes = (kind, base) => {
       console.log(`📡 Reading ${kind} eval results for ${target} / ${runName}`);
       // One call for the rows; the summary is derived from them rather than
       // scanning the event table a second time.
-      const obs = getObservability();
+      const obs = getObservability(req);
       const records = isAgent ? await obs.agentEvalResults(target, runName) : await obs.analystEvalResults(target, runName);
       res.json({ summary: summarizeEvalRecords(records), records });
     } catch (error) {
@@ -1560,7 +1663,7 @@ const registerEvalRoutes = (kind, base) => {
       if (!guard(req, res)) return;
       const { target, runName } = req.params;
       if (!RUN_NAME_PATTERN.test(runName)) return badRequest(res, 'Invalid run name.');
-      res.json({ data: await getObservability().evalLogs(target, runName) });
+      res.json({ data: await getObservability(req).evalLogs(target, runName) });
     } catch (error) {
       evalsErrorResponse(res, error, 'Error reading eval logs');
     }
@@ -1572,7 +1675,7 @@ const registerEvalRoutes = (kind, base) => {
       if (!guard(req, res)) return;
       const { target, recordId } = req.params;
       if (!RECORD_ID_PATTERN.test(recordId)) return badRequest(res, 'Invalid record id.');
-      res.json({ data: await getObservability().recordTrace(target, recordId) });
+      res.json({ data: await getObservability(req).recordTrace(target, recordId) });
     } catch (error) {
       evalsErrorResponse(res, error, 'Error reading record trace');
     }
@@ -1581,6 +1684,57 @@ const registerEvalRoutes = (kind, base) => {
 
 registerEvalRoutes('agent', '/api/agents/:target/evals');
 registerEvalRoutes('analyst', '/api/semantic-views/:target/evals');
+
+// ============================================================================
+// Run as role
+// ============================================================================
+
+/**
+ * Roles the browser may run the agent as, with whether the proxy can actually become
+ * each one and which users hold it.
+ * GET /api/run-as[?refresh=1]
+ */
+app.get('/api/run-as', async (req, res) => {
+  if (!runAs.enabled) return res.json({ enabled: false, roles: [] });
+  try {
+    res.json({ enabled: true, roles: await runAs.list({ fresh: req.query.refresh === '1' }) });
+  } catch (error) {
+    evalsErrorResponse(res, error, 'Error listing run-as roles');
+  }
+});
+
+/**
+ * Which of an agent's tools the selected role can reach. Preview of what Snowflake does
+ * at run time: a tool whose semantic view (or search service) the role has no privilege
+ * on is dropped with a TOOL_NOT_ACCESSIBLE warning.
+ * GET /api/agents/:agentName/access   (header X-Run-As-Role required)
+ */
+app.get('/api/agents/:agentName/access', withRunAs, async (req, res) => {
+  try {
+    const scope = requireScope(req, res);
+    if (!scope) return;
+    const { agentName } = req.params;
+    if (!validateAgentName(agentName)) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ error: ERROR_MESSAGES.TIPS.INVALID_AGENT_NAME });
+    }
+    if (!req.runAs) return badRequest(res, 'Pick a role (X-Run-As-Role) to preview its access.');
+
+    const endpoint = `https://${SNOWFLAKE_CONFIG.host}/api/v2/databases/${scope.database}/schemas/${scope.schema}/agents/${agentName}`;
+    const response = await fetch(endpoint, { method: 'GET', headers: getSnowflakeAuthHeaders(req) });
+    if (!response.ok) {
+      const errData = await parseJsonSafe(response, null);
+      const parts = [ERROR_MESSAGES.ERROR_PREFIX, `${ERROR_MESSAGES.HTTP_ERROR_STATUS} ${response.status} ${response.statusText}`];
+      if (errData && (errData.message || errData.error)) parts.push(errData.message || errData.error);
+      parts.push(`💡 Tip: ${req.runAs.role} may not have USAGE on this agent, or on its database and schema.`);
+      return res.status(response.status).json({ errorParts: parts });
+    }
+
+    const data = await parseJsonSafe(response, {});
+    res.json({ role: req.runAs.role, tools: await runAs.toolAccess(req.runAs.role, data.agent_spec) });
+  } catch (error) {
+    evalsErrorResponse(res, error, 'Error checking role access');
+  }
+});
 
 /**
  * MCP context (non-sensitive) for the tools demo UI.
@@ -1679,10 +1833,11 @@ app.listen(PORT, () => {
   console.log(`📍 Server running on: http://localhost:${PORT}`);
   console.log(`🔒 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🏔️  Snowflake Host: ${SNOWFLAKE_CONFIG.host}`);
-  console.log(`📊 Database: ${SNOWFLAKE_CONFIG.database}`);
-  console.log(`📁 Schema: ${SNOWFLAKE_CONFIG.schema}`);
+  console.log(`📊 Database: ${SNOWFLAKE_CONFIG.database || '(chosen in the UI)'}`);
+  console.log(`📁 Schema: ${SNOWFLAKE_CONFIG.schema || '(chosen in the UI)'}`);
   console.log(`🧩 MCP Server: ${SNOWFLAKE_CONFIG.mcpServer || '(not configured)'}`);
   console.log(`🧪 Eval role: ${SNOWFLAKE_CONFIG.evalRole || '(PAT default role)'}`);
+  console.log(`🎭 Run-as roles: ${runAs.enabled ? runAs.roles.join(', ') : '(disabled, set RUN_AS_ROLES to enable)'}`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
   console.log('Available endpoints:');
   console.log('  GET  /health                          - Health check');
@@ -1702,6 +1857,8 @@ app.listen(PORT, () => {
   console.log('  GET  /api/threads/:threadId           - Describe a thread (history)');
   console.log('  POST /api/agents/:agentName/feedback  - Submit feedback on an answer');
   console.log('  GET  /api/agents/:agentName/feedback  - Read feedback events');
+  console.log('  GET  /api/run-as                      - Roles the agent can be run as');
+  console.log('  GET  /api/agents/:agentName/access    - Tools a role can reach');
   console.log('  *    /api/agents/:agent/evals/...         - Agent eval runs, status, cancel, results, logs, traces');
   console.log('  *    /api/semantic-views/:view/evals/...  - Cortex Analyst eval runs, status, cancel, results');
   console.log('  GET  /api/mcp/context                 - MCP server config status');

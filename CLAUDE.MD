@@ -32,7 +32,7 @@ There is no lint script; ESLint runs through `react-scripts` (`eslintConfig` in 
 
 Two separate env files (both gitignored, both required for a working app):
 
-- `.env` (copy from `env.backend.example`) — backend secrets: `SNOWFLAKE_HOST`, `SNOWFLAKE_PAT`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, optional `SNOWFLAKE_WAREHOUSE`, plus `SERVER_PORT`, `NODE_ENV`, `ALLOWED_ORIGINS`.
+- `.env` (copy from `env.backend.example`) — backend secrets: `SNOWFLAKE_HOST`, `SNOWFLAKE_PAT`, optional `SNOWFLAKE_WAREHOUSE`, optional `SNOWFLAKE_DATABASE` / `SNOWFLAKE_SCHEMA` (only a default: the database and schema are picked in the UI and sent as `X-Snowflake-Database` / `X-Snowflake-Schema`), plus `SERVER_PORT`, `NODE_ENV`, `ALLOWED_ORIGINS`.
 - `.env.local` (copy from `env.frontend.example`) — frontend only: `REACT_APP_BACKEND_URL` (the backend URL). **No Snowflake credentials ever go here.**
 
 `SNOWFLAKE_WAREHOUSE` is optional: listing/metadata and chatting work without it, but **creating** Cortex Search services and semantic views requires it (those run DDL via the SQL API).
@@ -43,13 +43,14 @@ Two separate env files (both gitignored, both required for a working app):
 Browser (React, :3000)  ──HTTP──▶  Express proxy (server/, :3001)  ──HTTPS + PAT──▶  Snowflake REST + SQL APIs
 ```
 
-**The frontend never calls Snowflake directly.** Every Snowflake call goes through the proxy, which attaches the PAT auth headers (`X-Snowflake-Authorization-Token-Type: PROGRAMMATIC_ACCESS_TOKEN` + `Authorization: Bearer <PAT>`). The proxy is bound to a **single** Snowflake environment (one `.env`).
+**The frontend never calls Snowflake directly.** Every Snowflake call goes through the proxy, which attaches the PAT auth headers (`X-Snowflake-Authorization-Token-Type: PROGRAMMATIC_ACCESS_TOKEN` + `Authorization: Bearer <PAT>`). The proxy is bound to a **single** Snowflake account (one `.env`), but the database and schema are chosen per request: the `ScopeBar` in the chat screen stores them (`services/requestScope.ts`, remembered in `localStorage`), `apiHeaders()` sends them on every call, and the `withScope` middleware in `server.js` validates them into `req.sf` (`.env` values are the fallback). Routes that need both call `requireScope(req, res)`. Changing them starts a new chat and reloads the agent list. Eval runs are remembered per `database.schema`. MCP still uses the `.env` values.
 
 ### Backend (`server/`)
 - `server.js` — the whole Express app: CORS (origin allowlist via `ALLOWED_ORIGINS`), rate limiting on `/api/`, request validation, all routes. Two upstream styles: **REST** endpoints (`/api/v2/databases/.../agents...`, `/api/v2/cortex/threads`) for agents/chat/threads, and the **SQL API** (`POST /api/v2/statements`) for object listing/creation via `SHOW`/`CREATE`.
 - `snowflakeDdl.js` — builds `CREATE CORTEX SEARCH SERVICE` / `CREATE SEMANTIC VIEW` DDL from structured request bodies. Identifiers are validated (not string-injected); SQL expressions in semantic views are intentionally free text.
 - `evalsClient.js` — SQL API client for agent evals + feedback (bind variables, 202 polling, partitions, typed values, 429/5xx retry) and the query catalogue over `SNOWFLAKE.LOCAL.GET_AI_EVALUATION_DATA` / `GET_AI_OBSERVABILITY_EVENTS` / `EXECUTE_AI_EVALUATION`. JS port of `snowflake_evals_feedback_client.py`; setup and privileges are in `cortex_agent_evals_and_feedback.md`.
 - `evalRunRegistry.js` — JSON-file registry of eval runs (Snowflake has no "list runs" function), keyed by kind (`agent` | `analyst`), target and run name. Default `server/.data/eval_runs.json`, override with `EVAL_RUNS_FILE`.
+- `runAs.js` — "Run as role": an opt-in allowlist (`RUN_AS_ROLES`) of roles the chat may call the agent as, each using the shared PAT + `X-Snowflake-Role` or its own role-restricted token (`RUN_AS_PAT_<ROLE>`). `withRunAs` middleware in `server.js` turns the `X-Run-As-Role` request header into those credentials for the agent list/details, `:run`, threads and feedback routes only (never create/update, evals or DDL). Also checks per role whether the proxy can become it, and which of an agent's tools the role can reach (`DESCRIBE` as that role). See `cortex_agent_role_based_access.md`.
 - `constants.js` — `HTTP_STATUS`, `ERROR_MESSAGES` (including the `TIPS.*` hints surfaced to the UI), `CONFIG` (ports, rate limits, name-length caps).
 
 Errors are returned as `{ errorParts: [...] }` (an array of message lines) so the frontend can render structured, multi-line error messages with configuration hints.
@@ -60,6 +61,7 @@ Errors are returned as `{ errorParts: [...] }` (an array of message lines) so th
 - `components/CreateAgentPage.tsx` + `components/objects/*` — the agent builder and the Cortex Search / semantic-view creation forms.
 - `hooks/` — the real logic lives here: `useChatMessages` (SSE streaming + thread memory), `useAgentConfig` (loads agent list/config), `useSpeechRecognition` (Web Speech API voice input), `useAccordionState`.
 - `components/EvalsPage.tsx` + `components/evals/*` — Evaluations & Feedback page (feedback stats/list, start/track eval runs, metric scores, per-question grid, traces). `components/chat/MessageFeedback.tsx` is the thumbs up/down on each answer. The page has three tabs: user feedback, agent eval runs, and **Cortex Analyst** (semantic view) evals. One `EvalRunsPanel` serves both agents and semantic views via `kind`; the Analyst flow can generate the config YAML and write it to a stage. See `docs/ANALYST_EVALS.md`.
+- `components/chat/RunAsBar.tsx` + `services/runAsApi.ts` — the Run as role picker (roles, and users via the role they hold) and tool-access chips. The selection is held in memory only (reload = app default) and sent as `X-Run-As-Role`; changing it starts a new chat and reloads the agent list.
 - `services/snowflakeAgentsApi.ts`, `services/snowflakeObjectsApi.ts` and `services/snowflakeEvalsApi.ts` — typed wrappers around the backend proxy endpoints.
 - `config/env.ts` validates env vars; `contexts/ThemeContext.tsx` + `theme/theme.ts` drive light/dark MUI theming.
 

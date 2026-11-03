@@ -11,6 +11,8 @@
 
 import { config } from '../config/env';
 import { ERROR_TEXT } from '../constants/textConstants';
+import { apiHeaders } from './runAsApi';
+import { scopeHeaders } from './requestScope';
 
 /**
  * Snowflake Cortex Agent response interface based on API documentation
@@ -132,6 +134,7 @@ export const fetchCortexAgents = async (): Promise<SnowflakeCortexAgent[]> => {
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
+          ...apiHeaders(),
         },
         signal: controller.signal,
       });
@@ -210,6 +213,7 @@ export const describeCortexAgent = async (agentName: string): Promise<SnowflakeA
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
+          ...apiHeaders(),
         },
         signal: controller.signal,
       });
@@ -319,6 +323,7 @@ export const createCortexAgent = async (payload: CreateAgentRequest): Promise<an
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
+          ...scopeHeaders(),
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
@@ -387,6 +392,7 @@ export const updateCortexAgent = async (agentName: string, payload: CreateAgentR
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
+          ...scopeHeaders(),
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
@@ -443,7 +449,7 @@ export const updateCortexAgent = async (agentName: string, payload: CreateAgentR
 export const createCortexThread = async (): Promise<{ thread_id: number }> => {
   const response = await fetch(`${config.backendUrl}/api/threads`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', ...apiHeaders() },
     body: JSON.stringify({ origin_application: 'dash-desai' }),
   });
 

@@ -19,6 +19,7 @@ import {
 } from '@mui/material';
 import {
   ContentCopy as CopyIcon,
+  LockOutlined as LockIcon,
   Replay as ReplayIcon
 } from '@mui/icons-material';
 import { ChatMessage as ChatMessageType } from '../../types/chat';
@@ -28,7 +29,7 @@ import { ChartsSection } from './ChartsSection';
 import { AnnotationsSection } from './AnnotationsSection';
 import { MarkdownFormatter } from './MarkdownFormatter';
 import { MessageFeedback } from './MessageFeedback';
-import { CHAT_TEXT, MESSAGE_LABELS } from '../../constants/textConstants';
+import { CHAT_TEXT, MESSAGE_LABELS, RUN_AS_TEXT } from '../../constants/textConstants';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -215,6 +216,24 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             )
           )}
           
+          {/* Tools Snowflake dropped for the role this answer was produced under */}
+          {message.sender === 'assistant' &&
+           message.runAsRole &&
+           message.status === 'sent' &&
+           !message.isStreaming &&
+           message.toolWarnings &&
+           message.toolWarnings.length > 0 && (
+            <Tooltip title={RUN_AS_TEXT.WARNING_TOOLTIP} arrow>
+              <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 1.5, color: 'text.secondary' }}>
+                <LockIcon sx={{ fontSize: 14 }} />
+                <Typography variant="caption">
+                  {RUN_AS_TEXT.WARNING_PREFIX(message.runAsRole)}{' '}
+                  {Array.from(new Set(message.toolWarnings.map(w => w.tool || 'a tool'))).join(', ')}
+                </Typography>
+              </Stack>
+            </Tooltip>
+          )}
+
           {/* Error */}
           {message.status === 'error' && message.error && message.error.trim().length > 0 && (
             <Box

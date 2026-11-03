@@ -202,6 +202,44 @@ export const TEXT_CONSTANTS = {
     CALL_ERROR: 'Failed to call MCP tool.',
   },
 
+  // Database and schema picked in the UI (the backend .env values are only a default)
+  SCOPE: {
+    DATABASE: 'Database',
+    SCHEMA: 'Schema',
+    CAPTION: 'Agents, semantic views and evaluations are read from this database and schema. Changing it starts a new chat.',
+    PICK_DATABASE: 'Select a database',
+    PICK_SCHEMA: 'Select a schema',
+    LOADING: 'Loading…',
+    NONE: 'No databases are visible to the active role.',
+    NOT_VISIBLE: 'Not visible to the active role',
+    REFRESH: 'Reload databases and schemas',
+    DEFAULT_NOTE: 'Backend default',
+    CURRENT: (database: string, schema: string) => `${database}.${schema}`,
+  },
+
+  // Run as role: call the agent as a chosen role to see only what that role can see
+  RUN_AS: {
+    LABEL: 'Run as',
+    DEFAULT: 'App default role',
+    ROLES_GROUP: 'Roles',
+    USERS_GROUP: 'Users (run as the role they hold)',
+    CAPTION: 'Answers use only what this role can see. Changing the role starts a new chat.',
+    CHECK_AGAIN: 'Check roles again',
+    VIA: (role: string) => `via ${role}`,
+    MODE_TOKEN: 'own token',
+    MODE_HEADER: 'shared token',
+    UNAVAILABLE: 'Not available',
+    UNAVAILABLE_ALERT_TITLE: 'The app cannot run as this role yet',
+    TOOLS_LABEL: 'Tools this role can reach',
+    TOOLS_LOADING: 'Checking…',
+    TOOL_OK: 'Available to this role',
+    TOOL_BLOCKED: 'No access. Snowflake drops this tool for this role.',
+    TOOL_UNKNOWN: 'Could not be checked here.',
+    ACCESS_ERROR_TITLE: 'Could not check this role\'s access',
+    WARNING_PREFIX: (role: string) => `Not available to ${role}:`,
+    WARNING_TOOLTIP: 'Snowflake removed these tools before planning because this role has no access to their data (TOOL_NOT_ACCESSIBLE).',
+  },
+
   // Feedback on chat answers + Evals & Feedback page
   EVALS: {
     NAV_BUTTON_TOOLTIP: 'Evaluations & feedback',
@@ -416,6 +454,8 @@ export const CHAT_TEXT = TEXT_CONSTANTS.CHAT;
 export const CREATE_AGENT_TEXT = TEXT_CONSTANTS.CREATE_AGENT;
 export const MCP_TOOLS_TEXT = TEXT_CONSTANTS.MCP_TOOLS;
 export const EVALS_TEXT = TEXT_CONSTANTS.EVALS;
+export const RUN_AS_TEXT = TEXT_CONSTANTS.RUN_AS;
+export const SCOPE_TEXT = TEXT_CONSTANTS.SCOPE;
 export const MESSAGE_LABELS = TEXT_CONSTANTS.MESSAGE_LABELS;
 export const RESPONSE_TEXT = TEXT_CONSTANTS.RESPONSE;
 export const STATUS_TEXT = TEXT_CONSTANTS.STATUS;

@@ -33,20 +33,22 @@ const save = (runs) => {
 
 const kindOf = (r) => r.kind || 'agent';
 const targetOf = (r) => r.target || r.agent;
-const matches = (r, kind, target, runName) =>
-  kindOf(r) === kind && targetOf(r) === target && (runName === undefined || r.runName === runName);
+// A run belongs to one database.schema. Entries from before scoping have none and show everywhere.
+const matches = (r, kind, target, runName, scope) =>
+  kindOf(r) === kind && targetOf(r) === target && (runName === undefined || r.runName === runName) &&
+  (scope === undefined || r.scope === undefined || r.scope === scope);
 
 /** Normalize a stored entry so callers always see kind and target. */
 const present = (r) => ({ ...r, kind: kindOf(r), target: targetOf(r), agent: kindOf(r) === 'agent' ? targetOf(r) : undefined });
 
-const listRuns = (kind, target) =>
+const listRuns = (kind, target, scope) =>
   load()
-    .filter((r) => matches(r, kind, target))
+    .filter((r) => matches(r, kind, target, undefined, scope))
     .map(present)
     .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
 
-const getRun = (kind, target, runName) => {
-  const found = load().find((r) => matches(r, kind, target, runName));
+const getRun = (kind, target, runName, scope) => {
+  const found = load().find((r) => matches(r, kind, target, runName, scope));
   return found ? present(found) : null;
 };
 
@@ -54,16 +56,16 @@ const upsertRun = (run) => {
   const runs = load();
   const kind = run.kind || 'agent';
   const target = run.target || run.agent;
-  const i = runs.findIndex((r) => matches(r, kind, target, run.runName));
+  const i = runs.findIndex((r) => matches(r, kind, target, run.runName, run.scope));
   const merged = { ...(i >= 0 ? runs[i] : {}), ...run, kind, target };
   if (i >= 0) runs[i] = merged; else runs.push(merged);
   save(runs);
   return present(merged);
 };
 
-const removeRun = (kind, target, runName) => {
+const removeRun = (kind, target, runName, scope) => {
   const runs = load();
-  const next = runs.filter((r) => !matches(r, kind, target, runName));
+  const next = runs.filter((r) => !matches(r, kind, target, runName, scope));
   save(next);
   return next.length !== runs.length;
 };

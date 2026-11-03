@@ -10,6 +10,7 @@
 
 import { config } from '../config/env';
 import { ERROR_TEXT } from '../constants/textConstants';
+import { apiHeaders } from './runAsApi';
 
 export interface FeedbackPayload {
   positive: boolean;
@@ -142,7 +143,10 @@ const connectionError = (): Error => {
 
 const request = async (path: string, init?: RequestInit): Promise<any> => {
   try {
-    const response = await fetch(`${config.backendUrl}${path}`, init);
+    const response = await fetch(`${config.backendUrl}${path}`, {
+      ...init,
+      headers: { ...apiHeaders(), ...((init && init.headers) as Record<string, string> | undefined) },
+    });
     return await handleResponse(response);
   } catch (error: any) {
     if (error.fullMessage) throw error;
@@ -160,6 +164,7 @@ const agentPath = (agentName: string) => `/api/agents/${encodeURIComponent(agent
 
 // ---- Feedback ---------------------------------------------------------------
 
+// Sent as the role that produced the answer (apiHeaders carries it); that role needs USAGE on the agent.
 export const submitAgentFeedback = (agentName: string, payload: FeedbackPayload): Promise<{ status?: string }> =>
   request(`${agentPath(agentName)}/feedback`, jsonInit('POST', payload));
 

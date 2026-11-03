@@ -17,6 +17,10 @@ import { EmptyState } from './chat/EmptyState';
 import { StarterQuestions } from './chat/StarterQuestions';
 import { ChatMessage } from './chat/ChatMessage';
 import { ChatInput } from './chat/ChatInput';
+import { RunAsBar } from './chat/RunAsBar';
+import { ScopeBar } from './chat/ScopeBar';
+import { RunAsSelection, getRunAs, setRunAs } from '../services/runAsApi';
+import { RequestScope, getScope, setScope } from '../services/requestScope';
 import { STATUS_TEXT, ERROR_TEXT } from '../constants/textConstants';
 
 interface SimpleChatInterfaceProps {
@@ -40,6 +44,12 @@ const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToC
 
   // Selected agent state
   const [selectedAgent, setSelectedAgent] = useState<string>('');
+
+  // "Run as role": the role every agent call is made under (in memory; reload = app default)
+  const [runAs, setRunAsState] = useState<RunAsSelection>(getRunAs());
+
+  // Database and schema chosen in the UI (the backend .env values are only a default)
+  const [scope, setScopeState] = useState<RequestScope | null>(getScope());
   
   // Chat messages and streaming
   const { messages, isLoading, sendMessage, cancelRequest, clearMessages } = useChatMessages(selectedAgent);
@@ -206,6 +216,23 @@ const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToC
     refreshAgents();
   }, [clearMessages, thinkingAccordion, sqlQueriesAccordion, chartsAccordion, annotationsAccordion, refreshAgents]);
 
+  // Switch the role the agent runs as. A new chat is essential: the thread keeps history on
+  // Snowflake's side, so reusing it would carry one role's data into another role's answers.
+  // handleNewChat also reloads the agent list, which can differ per role.
+  const handleRunAsChange = useCallback((next: RunAsSelection) => {
+    setRunAs(next);       // headers on every call from here on
+    setRunAsState(next);
+    handleNewChat();
+  }, [handleNewChat]);
+
+  // Switch database or schema. Same reasoning as the role: start a new chat (a thread belongs to
+  // one agent) and reload the agent list, which is different in every schema.
+  const handleScopeChange = useCallback((next: RequestScope) => {
+    setScope(next);
+    setScopeState(next);
+    handleNewChat();
+  }, [handleNewChat]);
+
   // Handle chart toggle with manual tracking
   const handleChartToggle = useCallback((messageId: string) => {
     setManuallyToggledCharts(prev => {
@@ -247,12 +274,31 @@ const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToC
     return agentConfig.agents[selectedAgent]?.displayName || selectedAgent;
   }, [agentConfig, selectedAgent]);
 
+  // Also shown on the loading, error and empty screens, so a role that sees no agents
+  // can always be switched back
+  const runAsBar = (
+    <>
+      <RunAsBar
+        selection={runAs}
+        onChange={handleRunAsChange}
+        agentName={selectedAgent}
+        scopeKey={scope ? `${scope.database}.${scope.schema}` : ''}
+        disabled={isLoading}
+      />
+      <ScopeBar scope={scope} onChange={handleScopeChange} roleKey={runAs.role} disabled={isLoading} />
+    </>
+  );
+  const runAsBarOnly = (
+    <Container maxWidth="lg" sx={{ pt: 3 }}>{runAsBar}</Container>
+  );
+
   // Show loading state while config is loading
   if (configLoading) {
     return (
       <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
         {/* Header */}
         <ChatHeader />
+        {runAsBarOnly}
         
         <Box sx={{ 
           display: 'flex', 
@@ -277,6 +323,7 @@ const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToC
       <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
         {/* Header */}
         <ChatHeader />
+        {runAsBarOnly}
         
         <Box sx={{ 
           display: 'flex', 
@@ -351,6 +398,7 @@ const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToC
       <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
         {/* Header */}
         <ChatHeader />
+        {runAsBarOnly}
         
         <Box sx={{ 
           display: 'flex', 
@@ -401,6 +449,7 @@ const SimpleChatInterface: React.FC<SimpleChatInterfaceProps> = ({ onNavigateToC
         py: 3, 
         pb: 2 
       }}>
+        {runAsBar}
         {messages.length === 0 ? (
           <Stack spacing={3} sx={{ pt: 2 }}>
             {/* Empty State Greeting */}
